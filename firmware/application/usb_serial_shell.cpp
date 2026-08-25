@@ -36,6 +36,7 @@
 #include "crc.hpp"
 #include "hackrf_cpld_data.hpp"
 #include "performance_counter.hpp"
+#include "app_debug_log.hpp"
 
 #include "usb_serial_device_to_host.h"
 #include "i2c_device_to_host.h"
@@ -1209,6 +1210,26 @@ static void cmd_radioinfo(BaseSequentialStream* chp, int argc, char* argv[]) {
     return;
 }
 
+// Dumps (and optionally clears) the global app debug log ring buffer --
+// see app_debug_log.hpp. Much faster than screenframe/screenshot for
+// live debugging: it's plain text, survives past whatever currently
+// fits on screen, and needs no image decoding on the client side.
+static void cmd_applog(BaseSequentialStream* chp, int argc, char* argv[]) {
+    const char* usage = "usage: applog [clear]\r\n";
+    if (argc > 1 || (argc == 1 && strcmp(argv[0], "clear") != 0)) {
+        chprintf(chp, usage);
+        return;
+    }
+
+    const auto lines = app_debug_log::snapshot();
+    std::string out;
+    for (const auto& line : lines) out += line + "\r\n";
+    if (out.empty()) out = "(empty)\r\n";
+    fillOBuffer(&((SerialUSBDriver*)chp)->oqueue, (const uint8_t*)out.c_str(), out.length());
+
+    if (argc == 1) app_debug_log::clear();
+}
+
 static void cmd_pmemreset(BaseSequentialStream* chp, int argc, char* argv[]) {
     const char* usage = "usage: pmemreset yes\r\nThis will reset pmem to defaults!\r\n";
     (void)argv;
@@ -1544,6 +1565,7 @@ static const ShellCommand commands[] = {
     {"gotlight", cmd_gotlight},
     {"sysinfo", cmd_sysinfo},
     {"radioinfo", cmd_radioinfo},
+    {"applog", cmd_applog},
     {"pmemreset", cmd_pmemreset},
     {"settingsreset", cmd_settingsreset},
     {"sendpocsag", cmd_sendpocsag},

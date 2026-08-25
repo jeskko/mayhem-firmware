@@ -147,6 +147,7 @@ set(CPPSRC
 	${COMMON}/ais_baseband.cpp
 	${COMMON}/ais_packet.cpp
 	${COMMON}/ak4951.cpp
+	${COMMON}/app_debug_log.cpp
 	${COMMON}/backlight.cpp
 	${COMMON}/baseband_cpld.cpp
 	${COMMON}/bch_code.cpp
@@ -486,6 +487,24 @@ add_custom_command(
 )
 
 add_executable(${PROJECT_NAME}.elf ${CSRC} ${CPPSRC} ${ASMSRC})
+
+# Force shell.cpp to always recompile, so its embedded __DATE__/__TIME__
+# (the "Build time:" field printed by the `info` shell command) reflects
+# THIS build, not whichever earlier build last happened to touch this
+# specific file. Confirmed confusing in practice: a real firmware.bin
+# rebuild that only changed an unrelated translation unit (e.g.
+# proc_dmr.cpp) left shell.cpp's object file -- and its baked-in
+# timestamp -- untouched, making `info` look like the new code wasn't
+# actually included even though it was linked in correctly. Note
+# `Mayhem Version:` (VERSION_STRING, git-commit-based) is a SEPARATE
+# field and still won't reflect uncommitted local changes -- this only
+# fixes the Build time field.
+add_custom_target(force_shell_cpp_rebuild ALL
+	COMMAND ${CMAKE_COMMAND} -E touch_nocreate ${CMAKE_CURRENT_SOURCE_DIR}/shell.cpp
+	COMMENT "Touching shell.cpp so its Build time: field always reflects this build"
+)
+add_dependencies(${PROJECT_NAME}.elf force_shell_cpp_rebuild)
+
 target_link_options(${PROJECT_NAME}.elf PRIVATE
     "LINKER:--defsym,LD_FLASH_SIZE=${FLASH_BYTES_LIMIT_SIZE}"
 )
