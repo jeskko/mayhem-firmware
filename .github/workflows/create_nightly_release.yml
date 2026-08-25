@@ -169,7 +169,11 @@ jobs:
           name: Nightly Release - ${{ steps.date.outputs.date }}
           body: |
             **Nightly release - ${{ steps.date.outputs.date }}**
-            This build is the latest and greatest, although may not be the most stable as this is a nightly release.
+            This is [jeskko](https://github.com/jeskko)'s personal fork of
+            [Mayhem](https://github.com/portapack-mayhem/mayhem-firmware),
+            adding a DMR RX app on the `dmr-rx` branch. This build is the
+            latest and greatest, although may not be the most stable as
+            this is a nightly release.
             ## Release notes
             ###  Revision (${{ steps.version_date.outputs.date }}):
             ${{ steps.changelog.outputs.content }}

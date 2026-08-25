@@ -154,16 +154,31 @@ jobs:
           tag_name: ${{ steps.version.outputs.version }}
           name: Mayhem firmware ${{ steps.version.outputs.version }}
           body: |
-            **Stable release - ${{ steps.version.outputs.version }}**
-            This is a fork of the [Havoc](https://github.com/furrtek/portapack-havoc/) firmware, which itself was a fork of the [PortaPack](https://github.com/sharebrained/portapack-hackrf) firmware, an add-on for the [HackRF](http://greatscottgadgets.com/hackrf/). Please check the [readme](https://github.com/portapack-mayhem/mayhem-firmware/blob/master/README.md) for details.
+            **${{ steps.version.outputs.version }}**
+
+            This is [jeskko](https://github.com/jeskko)'s personal fork of
+            [Mayhem](https://github.com/portapack-mayhem/mayhem-firmware) --
+            itself built on [Havoc](https://github.com/furrtek/portapack-havoc/)
+            and [PortaPack](https://github.com/sharebrained/portapack-hackrf),
+            an add-on for the [HackRF](http://greatscottgadgets.com/hackrf/).
+            This fork adds a **DMR RX app** (ETSI TS 102 361 demod/decode:
+            sync, CACH, Link Control, CSBK, Talker Alias, and the underlying
+            FEC/CRC layers) on top of upstream Mayhem; see the `dmr-rx`
+            branch history and each new file's header for what's added and
+            where it came from. Companion survey/decode-validation tooling
+            lives in the separate [hackrf-dmr-tools](https://github.com/jeskko/hackrf-dmr-tools)
+            repo.
+
             ## Release notes
             ###  Revision (${{ steps.version.outputs.version }}):
             ${{ steps.changelog.outputs.content }}
 
-            **Full Changelog**: https://github.com/portapack-mayhem/mayhem-firmware/compare/${{ steps.past_version.outputs.past_version }}...${{ steps.version.outputs.version }}
+            **Full Changelog**: https://github.com/jeskko/mayhem-firmware/compare/${{ steps.past_version.outputs.past_version }}...${{ steps.version.outputs.version }}
 
             ## Installation
-            Check the [wiki](https://github.com/portapack-mayhem/mayhem-firmware/wiki/Update-firmware) for details how to upgrade.
+
+            Same as upstream Mayhem -- check its [wiki](https://github.com/portapack-mayhem/mayhem-firmware/wiki/Update-firmware)
+            for the general update procedure.
             __Warning:__ Since release 1.8.0, some applications has been moved to the SD card as we ran out of flash space.
 
             ### MicroSD card files

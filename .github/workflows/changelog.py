@@ -6,12 +6,12 @@ from datetime import datetime, timedelta, timezone
 
 # Set up your personal access token and the repository details
 token = os.environ.get('GH_TOKEN')
-repo_owner = "portapack-mayhem"
+repo_owner = "jeskko"
 repo_name = "mayhem-firmware"
 
 
 def print_stable_changelog(previous_sha):
-    url = f"compare/{previous_sha}...next"
+    url = f"compare/{previous_sha}...dmr-rx"
     commits = handle_get_request(url)
     for commit in commits["commits"]:
         # Print the commit details
