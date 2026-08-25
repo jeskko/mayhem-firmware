@@ -12,6 +12,21 @@ IMPORTANT MESSAGE FOR AI CODING AGENT: PLEASE READ AND FOLLOW  `AGENT.md` FILE!
 
 This is a fork of the [Havoc](https://github.com/furrtek/portapack-havoc/) firmware, which itself was a fork of the [PortaPack](https://github.com/sharebrained/portapack-hackrf) firmware, an add-on for the [HackRF](http://greatscottgadgets.com/hackrf/). A fork is a derivate, in this case one that has extra features and fixes when compared to the older versions.
 
+> [!NOTE]
+> **This is [jeskko](https://github.com/jeskko)'s personal fork** of upstream
+> [portapack-mayhem/mayhem-firmware](https://github.com/portapack-mayhem/mayhem-firmware),
+> not the official project (see the scam warning above). All credit for the
+> base firmware goes to the upstream Mayhem team and everyone credited in
+> this README below. This fork's own addition, on the `dmr-rx` branch, is a
+> **DMR RX app** -- real-time ETSI TS 102 361 demod/decode (sync, CACH, Link
+> Control, CSBK, Talker Alias, and the underlying FEC/CRC layers). See that
+> branch's commit history and each new file's own header comment for what
+> was added and its provenance (several FEC tables are ported from other
+> open-source DMR decoders under their original licenses/attribution, not
+> original work -- see the file headers and `LICENSE`). Companion survey and
+> decode-validation tooling lives in the separate
+> [hackrf-dmr-tools](https://github.com/jeskko/hackrf-dmr-tools) repo.
+
 [<img src="https://github.com/user-attachments/assets/dea337ab-fb64-4a2a-b419-69afd272e815" height="310">](https://github.com/portapack-mayhem/mayhem-firmware/wiki/PortaPack-Versions#new-h4m-mayhem-edition) 
 [<img src="https://github-production-user-asset-6210df.s3.amazonaws.com/4393979/295532718-8e5b661c-f946-4cee-8b2d-0a615f7715f4.png" height="310">](https://github.com/portapack-mayhem/mayhem-firmware/wiki/PortaPack-Versions#h2m-mayhem-edition)
 
