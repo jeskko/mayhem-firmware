@@ -119,6 +119,7 @@ MEMORY
     ram_external_app_ais_rx                (rwx) : org = 0xAE0E0000, len = 32k
     ram_external_app_aprs_rx               (rwx) : org = 0xAE0F0000, len = 32k
     ram_external_app_aprs_tx               (rwx) : org = 0xAE100000, len = 32k
+    ram_external_app_dmr_rx                (rwx) : org = 0xAE110000, len = 32k
 }
 
 SECTIONS
@@ -698,6 +699,12 @@ SECTIONS
         KEEP(*(.external_app.app_aprs_tx.application_information));
         *(*ui*external_app*aprs_tx*);
     } > ram_external_app_aprs_tx
+
+    .external_app_dmr_rx : ALIGN(4) SUBALIGN(4)
+    {
+        KEEP(*(.external_app.app_dmr_rx.application_information));
+        */external/dmr_rx/*(*ui*external_app*dmr_rx*);
+    } > ram_external_app_dmr_rx
 
 
 

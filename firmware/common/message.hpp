@@ -171,6 +171,9 @@ class Message {
         TetraBsch = 113,
         TetraDnb = 114,
         AudioDDCConfig = 115,
+        DmrBurst = 116,
+        DmrDebug = 117,
+        DmrEmbeddedSignalling = 118,
         MAX
     };
 
@@ -2064,5 +2067,101 @@ struct TetraDnbMessage : public Message {
 
     // 432 TCH type-5 bits: 216 bits before the training sequence + 216 bits after.
     std::array<uint8_t, 54> payload;
+};
+
+struct DmrBurstMessage : public Message {
+    constexpr DmrBurstMessage(
+        const uint8_t* bits,
+        bool inv,
+        uint8_t sync,
+        uint8_t err,
+        bool has_cach_bits,
+        const uint8_t* cach,
+        float sync_mag_ratio_)
+        : Message(Message::ID::DmrBurst),
+          inverted(inv),
+          sync_type(sync),
+          sync_errors(err),
+          payload{},
+          has_cach(has_cach_bits),
+          cach_payload{},
+          sync_mag_ratio(sync_mag_ratio_) {
+        for (size_t i = 0; i < 33; i++)
+            payload[i] = bits[i];
+        for (size_t i = 0; i < 3; i++)
+            cach_payload[i] = cach[i];
+    }
+
+    bool inverted;
+    uint8_t sync_type;  // 0=BS Voice, 1=BS Data, 2=MS Voice, 3=MS Data, 4=RC
+    uint8_t sync_errors;
+
+    // 264 bit DMR burst: Info1(98) + SlotType1(10) + Sync(48) + SlotType2(10) + Info2(98)
+    std::array<uint8_t, 33> payload;
+
+    // The 24-bit CACH field (Tier II only) immediately preceding this
+    // burst -- see DmrSymbolProcessor::Burst::cach_bits. has_cach is
+    // false very near the start of reception, before enough bit history
+    // exists yet, and always false for Tier I DMO (which has no CACH).
+    bool has_cach;
+    std::array<uint8_t, 3> cach_payload;
+
+    // max(|symbol|)/min(|symbol|) across this burst's own sync window --
+    // see DmrSymbolProcessor::MAG_RATIO_REJECT_THRESHOLD. Exposed so the
+    // UI can show it and help judge whether that threshold can be
+    // tightened further without starting to reject genuine bursts.
+    float sync_mag_ratio;
+};
+
+// Periodic (~1/s) live telemetry, independent of whether any burst is
+// ever actually found -- added specifically to debug "sync sometimes
+// fires on noise but never on a real signal" on real hardware without
+// guessing further from offline capture analysis alone.
+struct DmrDebugMessage : public Message {
+    constexpr DmrDebugMessage(
+        float avg_abs_symbol,
+        float outer_amp_est,
+        bool carrier_present,
+        uint8_t last_best_sync_err,
+        uint32_t symbols_seen,
+        float dc_estimate)
+        : Message(Message::ID::DmrDebug),
+          avg_abs_symbol(avg_abs_symbol),
+          outer_amp_est(outer_amp_est),
+          carrier_present(carrier_present),
+          last_best_sync_err(last_best_sync_err),
+          symbols_seen(symbols_seen),
+          dc_estimate(dc_estimate) {
+    }
+
+    float avg_abs_symbol;       // running |raw_symbol| average, all symbols
+    float outer_amp_est;        // current ground-truth outer-level estimate
+    bool carrier_present;       // carrier-present gate's current state
+    uint8_t last_best_sync_err;  // closest sync match seen, out of 24 (25 = none checked yet)
+    uint32_t symbols_seen;      // total symbols processed since app start (confirms the pipeline is alive)
+    float dc_estimate;          // tracked residual frequency error (Hz) being subtracted pre-slicing
+};
+
+// One raw 48-bit Embedded Signalling window per physical burst period of
+// an armed voice call -- see DmrSymbolProcessor::EmbeddedSignallingWindow
+// and arm_embedded_signalling() for what this is and why it's handed up
+// un-interpreted. Deliberately as small/cheap as DmrDebugMessage: this
+// fires once per ~27.5ms burst period during any voice call, an order
+// of magnitude more often than DmrBurstMessage's already-frequent rate,
+// so it carries only the 6 raw bytes -- all FEC (QR(16,7,6) EMB decode,
+// BPTC(128,77), the mod-31 checksum) and the LCSS fragment-assembly
+// state machine happen on M0 (see dmr_embedded_lc.hpp's
+// EmbeddedSignallingAssembler), matching this decoder's established
+// M4-dumb/M0-FEC split.
+struct DmrEmbeddedSignallingMessage : public Message {
+    constexpr DmrEmbeddedSignallingMessage(
+        const uint8_t* bits48)
+        : Message(Message::ID::DmrEmbeddedSignalling),
+          payload{} {
+        for (size_t i = 0; i < 6; i++)
+            payload[i] = bits48[i];
+    }
+
+    std::array<uint8_t, 6> payload;
 };
 #endif /*__MESSAGE_H__*/

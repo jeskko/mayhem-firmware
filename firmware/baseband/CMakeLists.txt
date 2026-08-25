@@ -795,6 +795,14 @@ set(MODE_CPPSRC
 )
 DeclareTargets(PTET tetra_rx)
 
+### DMR Rx
+
+set(MODE_CPPSRC
+	proc_dmr.cpp
+	dmr_symbol_processor.cpp
+)
+DeclareTargets(PDMR dmr_rx)
+
 ### SD over USB
 
 set(MODE_INCDIR

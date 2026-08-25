@@ -391,6 +391,19 @@ set(EXTCPPSRC
 	external/tetra_rx/tetra_rcpc.cpp
 	external/tetra_rx/tetra_viterbi.cpp
 
+	#dmr rx
+	external/dmr_rx/main.cpp
+	external/dmr_rx/ui_dmr_rx.cpp
+	external/dmr_rx/dmr_golay2087.cpp
+	external/dmr_rx/dmr_bptc19696.cpp
+	external/dmr_rx/dmr_fulllc.cpp
+	external/dmr_rx/dmr_rs129.cpp
+	external/dmr_rx/dmr_csbk.cpp
+	external/dmr_rx/dmr_cach.cpp
+	external/dmr_rx/dmr_bptc12877.cpp
+	external/dmr_rx/dmr_qr1676.cpp
+	external/dmr_rx/dmr_embedded_lc.cpp
+
 	#adsb rx
 	external/adsbrx/main.cpp
 	external/adsbrx/ui_adsb_rx.cpp
@@ -505,6 +518,7 @@ set(EXTAPPLIST
 	secplustx
   signal_hunter
 	tetra_rx
+	dmr_rx
 	adsbrx
 	ais_rx
 	aprs_rx
