@@ -495,12 +495,20 @@ DeclareTargets(PSGD subghzd)
 
 
 ### Weather Stations
+
+# -Os here (not the default -O3): proc_weather.cpp overflows its 32KB
+# baseband flash budget under newer GCC (e.g. GCC 16 vs. upstream CI's
+# pinned GCC 9), which generates larger code for it than -O3 did
+# before. This MODE_FLAGS override used to be set one module too late
+# (right before Flash Utility instead of before Weather), so it never
+# actually applied to the module it was clearly meant for.
+set(MODE_FLAGS "-Os")
 set(MODE_CPPSRC
 	proc_weather.cpp
 )
 DeclareTargets(PWTH weather)
 
-set(MODE_FLAGS "-Os")
+set(MODE_FLAGS "-O3")
 
 ### Flash Utility
 

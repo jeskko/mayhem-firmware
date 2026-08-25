@@ -23,6 +23,7 @@
 #ifndef __TONESETS_H__
 #define __TONESETS_H__
 
+#include <cstdint>
 #include <memory>
 #include <array>
 

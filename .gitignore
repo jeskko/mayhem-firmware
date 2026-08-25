@@ -56,6 +56,9 @@ cmake-build-debug/
 # Debugging
 .gdbinit*
 
+# Stray local build logs (e.g. from ./dockerize.sh or manual podman/docker builds)
+docker_build*.log
+
 # Editor/ IDE files
 *.sublime-project
 *.sublime-workspace

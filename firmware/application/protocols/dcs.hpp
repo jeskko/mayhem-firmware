@@ -23,6 +23,7 @@
 #ifndef __DCS_H_
 #define __DCS_H_
 
+#include <cstdint>
 #include <memory>
 
 #define DCS_CODES_NB 512
