@@ -171,9 +171,10 @@ class Message {
         TetraBsch = 113,
         TetraDnb = 114,
         AudioDDCConfig = 115,
-        DmrBurst = 116,
-        DmrDebug = 117,
-        DmrEmbeddedSignalling = 118,
+        RxFs4Config = 116,
+        DmrBurst = 117,
+        DmrDebug = 118,
+        DmrEmbeddedSignalling = 119,
         MAX
     };
 
@@ -312,6 +313,18 @@ class SpectrumStreamingConfigMessage : public Message {
     }
 
     Mode mode{Mode::Stopped};
+};
+
+// Application sample-rate translation, independent of PRALINE's AFE shift.
+enum class RxFs4Direction : uint8_t { Down,
+                                      Up };
+
+class RxFs4ConfigMessage : public Message {
+   public:
+    constexpr RxFs4ConfigMessage(RxFs4Direction direction)
+        : Message{ID::RxFs4Config}, direction{direction} {}
+
+    const RxFs4Direction direction;
 };
 
 class AudioDDCConfigMessage : public Message {
@@ -742,7 +755,8 @@ class AMConfigureMessage : public Message {
         const fir_taps_complex<64> channel_filter,
         const Modulation modulation,
         const iir_biquad_config_t audio_hpf_lpf_config,
-        const size_t channel_spectrum_decimation_factor)
+        const size_t channel_spectrum_decimation_factor,
+        const uint8_t squelch_level = 0)
 
         : Message{ID::AMConfigure},
           decim_0_filter(decim_0_filter),
@@ -751,7 +765,8 @@ class AMConfigureMessage : public Message {
           channel_filter(channel_filter),
           modulation{modulation},
           audio_hpf_lpf_config(audio_hpf_lpf_config),
-          channel_spectrum_decimation_factor(channel_spectrum_decimation_factor) {
+          channel_spectrum_decimation_factor(channel_spectrum_decimation_factor),
+          squelch_level(squelch_level) {
     }
 
     const fir_taps_real<24> decim_0_filter;
@@ -761,6 +776,7 @@ class AMConfigureMessage : public Message {
     const Modulation modulation;
     const iir_biquad_config_t audio_hpf_lpf_config;
     const size_t channel_spectrum_decimation_factor;
+    const uint8_t squelch_level;  // AM channel-power squelch threshold (0 = off)
 };
 
 // TODO: Put this somewhere else, or at least the implementation part.

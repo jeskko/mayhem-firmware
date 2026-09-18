@@ -61,6 +61,7 @@ class ReceiverModel {
         uint8_t nbfm_config_index = 0;
         uint8_t wfm_config_index = 0;
         uint8_t squelch_level = 80;
+        uint8_t am_squelch_level = 0;  // AM channel-power squelch threshold (0 = off)
     };
 
     /* The frequency to receive (no offset). */
@@ -109,6 +110,9 @@ class ReceiverModel {
     uint8_t squelch_level() const;
     void set_squelch_level(uint8_t v);
 
+    uint8_t am_squelch_level() const;
+    void set_am_squelch_level(uint8_t v);
+
     void set_antenna_bias();
 
     volume_t headphone_volume() const;
@@ -145,6 +149,7 @@ class ReceiverModel {
     AMConfigureMessage::Zoom_waterfall am_spectrum_zoom_{AMConfigureMessage::Zoom_waterfall::ZOOM_x_1};
     settings_t settings_{};
     bool enabled_ = false;
+    RxFs4Direction application_fs4_direction_{RxFs4Direction::Down};
     rf::Frequency hidden_offset = 0;  // when we need to hide the offset from user, we set this. like when WeFax needs -300Hz.
 
     int32_t tuning_offset();
