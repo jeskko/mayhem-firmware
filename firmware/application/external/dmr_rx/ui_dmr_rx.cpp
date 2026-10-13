@@ -161,7 +161,7 @@ std::string SlotLcState::format(const char* row_label) const {
 
 DmrRxView::DmrRxView(NavigationView& nav)
     : nav_{nav} {
-    baseband::run_prepared_image(portapack::memory::map::m4_code.base());
+    baseband::run_image(portapack::spi_flash::image_tag_dmrrx);
 
     add_children({&rssi, &channel, &field_rf_amp, &field_lna, &field_vga,
                   &field_frequency, &text_cc, &text_dt, &text_sync, &text_site,

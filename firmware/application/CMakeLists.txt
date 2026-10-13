@@ -44,7 +44,22 @@ if(cpp20_supported)
 else()
 	set(USE_CPPOPT "-std=c++17")
 endif()
-set(USE_CPPOPT "${USE_CPPOPT} -fno-rtti -fno-exceptions -Weffc++ -Wuninitialized -Wno-volatile")
+set(USE_CPPOPT "${USE_CPPOPT} -fno-rtti -fno-exceptions -Weffc++ -Wuninitialized")
+
+# C++ standard deprecations that the vendored ChibiOS 2.6 headers use when
+# included from C++: compound assignment to volatile, and the register storage
+# class, which GCC requires to bind a variable to an explicit register
+# (port_lock()/port_unlock() in chcore_v7m.h).
+#
+# Each -Wno-* is passed only when the compiler knows the positive form. GCC
+# accepts an unknown -Wno-* silently, then reports "unrecognized command line
+# option" as soon as any other diagnostic fires.
+foreach(cxx_warning volatile register)
+	check_cxx_compiler_flag("-W${cxx_warning}" cxx_warn_${cxx_warning}_supported)
+	if(cxx_warn_${cxx_warning}_supported)
+		set(USE_CPPOPT "${USE_CPPOPT} -Wno-${cxx_warning}")
+	endif()
+endforeach()
 
 # Enable this if you want the linker to remove unused code and data
 set(USE_LINK_GC yes)
@@ -486,6 +501,7 @@ add_custom_command(
 	DEPENDS ${HACKRF_CPLD_TOOL} ${HACKRF_CPLD_XSVF_PATH}
 )
 
+
 add_executable(${PROJECT_NAME}.elf ${CSRC} ${CPPSRC} ${ASMSRC})
 
 # Force shell.cpp to always recompile, so its embedded __DATE__/__TIME__
@@ -511,18 +527,24 @@ target_link_options(${PROJECT_NAME}.elf PRIVATE
 # NB: LPC43xx_M0.ld does INCLUDE external.ld, so that one has to be listed too -
 # otherwise editing the external app section rules silently does not relink.
 set_target_properties(${PROJECT_NAME}.elf PROPERTIES
-    LINK_DEPENDS "${LDSCRIPT};${CMAKE_CURRENT_SOURCE_DIR}/external/external.ld")
+    LINK_DEPENDS "${LDSCRIPT};${CMAKE_BINARY_DIR}/firmware/application/external/external.ld")
+target_link_libraries(${PROJECT_NAME}.elf ${LIBS} "-L${CMAKE_CURRENT_BINARY_DIR}" "-L${CMAKE_CURRENT_BINARY_DIR}/external" "-L${CMAKE_CURRENT_LIST_DIR}/external")
+
 add_definitions(${DEFS})
 include_directories(. ${INCDIR})
 link_directories(${LLIBDIR})
-target_link_libraries(${PROJECT_NAME}.elf ${LIBS} "-L${CMAKE_CURRENT_LIST_DIR}/external")
 target_link_libraries(${PROJECT_NAME}.elf -Wl,-Map=${PROJECT_NAME}.map)
 target_link_libraries(${PROJECT_NAME}.elf -Wl,--print-memory-usage)
+# Keep the relocation entries in the .elf. "export_external_apps.py" uses them
+# to find the words in an external app's image that are addresses, instead of
+# guessing from the byte pattern. Only the .elf grows, the .bin and the .ppma
+# images are produced by objcopy and are unchanged.
+target_link_libraries(${PROJECT_NAME}.elf -Wl,--emit-relocs)
 
 add_custom_command(
 	OUTPUT ${PROJECT_NAME}.bin
 	COMMAND ${CMAKE_OBJCOPY} -v -O binary ${PROJECT_NAME}.elf ${PROJECT_NAME}.bin --remove-section=.external_app_*
-	COMMAND ${EXPORT_EXTERNAL_APP_IMAGES} ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_OBJCOPY} ${EXTAPPLIST}
+	COMMAND ${EXPORT_EXTERNAL_APP_IMAGES} ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_OBJCOPY} ${CMAKE_READELF} ${M4_CODE_SIZE} ${EXTAPPLIST}
 	DEPENDS ${PROJECT_NAME}.elf
 )
 

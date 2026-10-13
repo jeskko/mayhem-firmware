@@ -56,6 +56,34 @@ std::string type_name(tpms::Reading::Type type) {
             return "Schrader";
         case tpms::Reading::Type::GMC_96:
             return "GMC_96";
+        case tpms::Reading::Type::Toyota:
+            return "Toyota";
+        case tpms::Reading::Type::Ford:
+            return "Ford";
+        case tpms::Reading::Type::Citroen:
+            return "Citroen";
+        case tpms::Reading::Type::Renault:
+            return "Renault";
+        case tpms::Reading::Type::Hyundai_VDO:
+            return "Hyundai-VDO";
+        case tpms::Reading::Type::Nissan:
+            return "Nissan";
+        case tpms::Reading::Type::Abarth124:
+            return "Abarth124";
+        case tpms::Reading::Type::Jansite:
+            return "Jansite";
+        case tpms::Reading::Type::Jansite_Solar:
+            return "Jansite-Solar";
+        case tpms::Reading::Type::Kia:
+            return "Kia";
+        case tpms::Reading::Type::Elantra2012:
+            return "Elantra2012";
+        case tpms::Reading::Type::PMV107J:
+            return "PMV-107J";
+        case tpms::Reading::Type::Renault_0435R:
+            return "Renault-0435R";
+        case tpms::Reading::Type::AVE:
+            return "AVE";
         default:
             return "Unknown";
     }
@@ -122,8 +150,8 @@ void TPMSRecentEntry::update(const tpms::Reading& reading) {
 
 TPMSAppView::TPMSAppView(NavigationView& nav)
     : nav_{nav} {
-    // baseband::run_image(portapack::spi_flash::image_tag_tpms);
-    baseband::run_prepared_image(portapack::memory::map::m4_code.base());
+    baseband::run_image(portapack::spi_flash::image_tag_tpms);
+    // baseband::run_prepared_image(portapack::memory::map::m4_code.base());
 
     add_children({&rssi,
                   &field_volume,
