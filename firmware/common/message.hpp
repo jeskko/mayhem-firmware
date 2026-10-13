@@ -2095,7 +2095,9 @@ struct DmrBurstMessage : public Message {
         uint8_t err,
         bool has_cach_bits,
         const uint8_t* cach,
-        float sync_mag_ratio_)
+        float sync_mag_ratio_,
+        uint8_t slot_phase_,
+        bool new_grid_)
         : Message(Message::ID::DmrBurst),
           inverted(inv),
           sync_type(sync),
@@ -2103,7 +2105,9 @@ struct DmrBurstMessage : public Message {
           payload{},
           has_cach(has_cach_bits),
           cach_payload{},
-          sync_mag_ratio(sync_mag_ratio_) {
+          sync_mag_ratio(sync_mag_ratio_),
+          slot_phase(slot_phase_),
+          new_grid(new_grid_) {
         for (size_t i = 0; i < 33; i++)
             payload[i] = bits[i];
         for (size_t i = 0; i < 3; i++)
@@ -2119,8 +2123,7 @@ struct DmrBurstMessage : public Message {
 
     // The 24-bit CACH field (Tier II only) immediately preceding this
     // burst -- see DmrSymbolProcessor::Burst::cach_bits. has_cach is
-    // false very near the start of reception, before enough bit history
-    // exists yet, and always false for Tier I DMO (which has no CACH).
+    // set only on BS-sourced bursts (BS voice/data sync).
     bool has_cach;
     std::array<uint8_t, 3> cach_payload;
 
@@ -2129,6 +2132,11 @@ struct DmrBurstMessage : public Message {
     // UI can show it and help judge whether that threshold can be
     // tightened further without starting to reject genuine bursts.
     float sync_mag_ratio;
+
+    // Burst-grid slot phase (0/1) and whether this burst started a new
+    // grid -- see DmrSymbolProcessor::Burst::slot_phase/new_grid.
+    uint8_t slot_phase;
+    bool new_grid;
 };
 
 // Periodic (~1/s) live telemetry, independent of whether any burst is
@@ -2160,26 +2168,37 @@ struct DmrDebugMessage : public Message {
     float dc_estimate;          // tracked residual frequency error (Hz) being subtracted pre-slicing
 };
 
-// One raw 48-bit Embedded Signalling window per physical burst period of
-// an armed voice call -- see DmrSymbolProcessor::EmbeddedSignallingWindow
-// and arm_embedded_signalling() for what this is and why it's handed up
-// un-interpreted. Deliberately as small/cheap as DmrDebugMessage: this
-// fires once per ~27.5ms burst period during any voice call, an order
-// of magnitude more often than DmrBurstMessage's already-frequent rate,
-// so it carries only the 6 raw bytes -- all FEC (QR(16,7,6) EMB decode,
+// One raw 48-bit Embedded Signalling window per voice burst B-F of an
+// armed voice call -- see DmrSymbolProcessor::EmbeddedSignallingWindow
+// and update_embedded_schedule() for what this is and why it's handed up
+// un-interpreted. Kept small: it carries only the 6 raw bytes plus the
+// burst's 3 CACH bytes -- all FEC (QR(16,7,6) EMB decode,
 // BPTC(128,77), the mod-31 checksum) and the LCSS fragment-assembly
 // state machine happen on M0 (see dmr_embedded_lc.hpp's
 // EmbeddedSignallingAssembler), matching this decoder's established
 // M4-dumb/M0-FEC split.
 struct DmrEmbeddedSignallingMessage : public Message {
     constexpr DmrEmbeddedSignallingMessage(
-        const uint8_t* bits48)
+        const uint8_t* bits48,
+        uint8_t slot_phase_,
+        bool has_cach_bits,
+        const uint8_t* cach)
         : Message(Message::ID::DmrEmbeddedSignalling),
-          payload{} {
+          payload{},
+          slot_phase(slot_phase_),
+          has_cach(has_cach_bits),
+          cach_payload{} {
         for (size_t i = 0; i < 6; i++)
             payload[i] = bits48[i];
+        for (size_t i = 0; i < 3; i++)
+            cach_payload[i] = cach[i];
     }
 
     std::array<uint8_t, 6> payload;
+    uint8_t slot_phase;  // burst-grid phase the window came from
+    // The CACH ahead of this voice burst (BS-sourced superframes only) --
+    // see DmrSymbolProcessor::EmbeddedSignallingWindow::cach_bits.
+    bool has_cach;
+    std::array<uint8_t, 3> cach_payload;
 };
 #endif /*__MESSAGE_H__*/

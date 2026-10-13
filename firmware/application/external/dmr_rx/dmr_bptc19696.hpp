@@ -61,10 +61,10 @@ namespace dmr {
 // bits196: one bit per byte (0 or 1), raw received (still-interleaved)
 // order, exactly the burst's Info1(98 bits) followed by Info2(98 bits).
 // out96: one bit per byte (0 or 1), MSB-first PDU order, on success.
-// Returns false if a row or column had more than 1 bit wrong (i.e. an
-// uncorrectable block) -- callers should treat out96 as unreliable in
-// that case (the caller's own PDU-level CRC is still the real gate on
-// trusting the content either way).
+// Returns false if iterated row/column correction never reached a pass
+// with every row and column clean (an uncorrectable block) -- callers
+// should treat out96 as unreliable in that case (the caller's own
+// PDU-level CRC is still the real gate on trusting the content either way).
 bool bptc19696_decode(const uint8_t bits196[196], uint8_t out96[96]);
 
 }  // namespace dmr

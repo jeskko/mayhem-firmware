@@ -24,18 +24,95 @@
 #include <cmath>
 
 void DmrSymbolProcessor::reset_sync() {
+    // The burst grid anchor and the embedded schedules are deliberately
+    // kept: bit_count_ keeps running through a carrier gap, and inbound/
+    // simplex traffic gaps the carrier between every burst.
     pending_burst_.valid = false;
-    armed_embedded_signalling_.active = false;
     sign_register_ = 0;
 }
 
-void DmrSymbolProcessor::arm_embedded_signalling(uint64_t voice_lc_header_burst_start) {
-    armed_embedded_signalling_.active = true;
-    // ETSI clause 7.1.3: "The LC starts on the first non-SYNC and
-    // non-RC burst of a superframe" -- i.e. frame B, exactly 1 physical
-    // burst period after frame A (the Voice LC Header burst itself).
-    armed_embedded_signalling_.window_start_48 =
-        voice_lc_header_burst_start + PHYSICAL_BURST_PERIOD_BITS + SYNC_OFFSET;
+uint8_t DmrSymbolProcessor::slot_phase(uint64_t burst_start, uint8_t errors, bool& new_grid, bool& on_grid) {
+    // Phase is counted in 288-bit steps from the previous sync burst, not
+    // from an absolute origin, so slow symbol-clock drift can't flip it.
+    // A burst far off that grid (or after a long silence) is a new
+    // transmission with its own timing and starts a new grid -- as in
+    // datarx dmr.py _phase().
+    new_grid = false;
+    on_grid = true;
+    if (has_anchor_ && burst_start >= anchor_start_) {
+        const uint64_t d = burst_start - anchor_start_;
+        const uint64_t k = (d + PHYSICAL_BURST_PERIOD_BITS / 2) / PHYSICAL_BURST_PERIOD_BITS;
+        const uint64_t grid_start = k * PHYSICAL_BURST_PERIOD_BITS;
+        const uint64_t off = (d > grid_start) ? d - grid_start : grid_start - d;
+        const uint8_t phase = static_cast<uint8_t>((anchor_phase_ + k) & 1);
+        if (d <= GRID_MAX_GAP_BITS) {
+            if (off <= GRID_TOLERANCE_BITS) {
+                anchor_phase_ = phase;
+                anchor_start_ = burst_start;
+                return phase;
+            }
+            if (errors > 1) {
+                // Marginal sync off a live grid: almost certainly a false
+                // match inside a burst. Leave the grid alone.
+                on_grid = false;
+                return phase;
+            }
+        }
+    }
+    new_grid = has_anchor_;
+    has_anchor_ = true;
+    anchor_start_ = burst_start;
+    anchor_phase_ = 0;
+    return anchor_phase_;
+}
+
+void DmrSymbolProcessor::update_embedded_schedule(SyncType sync_type, uint8_t phase, uint64_t burst_start) {
+    auto& armed = armed_embedded_signalling_[phase];
+    if (sync_type == SyncType::BS_VOICE || sync_type == SyncType::MS_VOICE) {
+        // Voice burst A: B-F follow at 576-bit steps in this slot
+        // (ETSI TS 102 361-1 clause 7.1.3: the LC starts on the first
+        // non-SYNC, non-RC burst of the superframe).
+        armed.active = true;
+        armed.voice_a_start = burst_start;
+        armed.bs_sourced = sync_type == SyncType::BS_VOICE;
+        armed.next_index = 1;
+    } else {
+        // Data/RC sync: this slot is no longer carrying a voice superframe.
+        armed.active = false;
+    }
+}
+
+void DmrSymbolProcessor::emit_embedded_windows() {
+    for (uint8_t phase = 0; phase < 2; phase++) {
+        auto& armed = armed_embedded_signalling_[phase];
+        if (!armed.active) continue;
+
+        const uint64_t voice_burst_start = armed.voice_a_start + armed.next_index * SLOT_BURST_PERIOD_BITS;
+        const uint64_t window_start = voice_burst_start + SYNC_OFFSET;
+        if (bit_count_ < window_start + SYNC_BITS) continue;
+
+        EmbeddedSignallingWindow window{};
+        window.slot_phase = phase;
+        for (size_t i = 0; i < SYNC_BITS; i++) {
+            const uint8_t b = history_bit(window_start + i);
+            window.bits48[i >> 3] |= static_cast<uint8_t>(b << (7 - (i & 7)));
+        }
+        if (armed.bs_sourced) {
+            window.has_cach = true;
+            const uint64_t cach_start = voice_burst_start - CACH_BITS;
+            for (size_t i = 0; i < CACH_BITS; i++) {
+                const uint8_t b = history_bit(cach_start + i);
+                window.cach_bits[i >> 3] |= static_cast<uint8_t>(b << (7 - (i & 7)));
+            }
+        }
+        if (on_embedded_signalling_) on_embedded_signalling_(window);
+
+        // Skip position 6: that is the next superframe's voice burst A,
+        // which carries a sync word and re-arms this schedule if detected.
+        armed.next_index++;
+        if (armed.next_index == 6) armed.next_index++;
+        if (armed.next_index > EMBEDDED_LAST_INDEX) armed.active = false;
+    }
 }
 
 void DmrSymbolProcessor::process_symbol(const float raw_symbol) {
@@ -174,38 +251,9 @@ void DmrSymbolProcessor::process_symbol(const float raw_symbol) {
     if (pending_burst_.valid && bit_count_ >= pending_burst_.ready_at)
         push_burst();
 
-    // Embedded-signalling extraction runs independently of, and in
-    // parallel with, the sync-correlation path above -- these bit
-    // positions are BY DESIGN not expected to match any real sync word
-    // on genuine embedded-signalling-carrying bursts (see
-    // arm_embedded_signalling()'s comment), so there's no conflict
-    // between the two checks running every symbol. One raw 48-bit window
-    // handed up per physical burst period -- including, harmlessly, the
-    // burst periods that turn out to actually be the NEXT frame A (a
-    // real sync word): the caller's LCSS decode off real sync-word bits
-    // will just produce essentially-random values that don't complete a
-    // valid sequence and get ignored, exactly like any other spurious/
-    // corrupted LCSS reading would. No interpretation happens here -- see
-    // EmbeddedSignallingWindow's comment for why.
-    if (armed_embedded_signalling_.active &&
-        bit_count_ >= armed_embedded_signalling_.window_start_48 + SYNC_BITS) {
-        EmbeddedSignallingWindow window{};
-        for (size_t i = 0; i < SYNC_BITS; i++) {
-            const uint8_t b = history_bit(armed_embedded_signalling_.window_start_48 + i);
-            window.bits48[i >> 3] |= static_cast<uint8_t>(b << (7 - (i & 7)));
-        }
-        if (on_embedded_signalling_) on_embedded_signalling_(window);
-
-        // Self-renewing: a call's Talker Alias/GPS/redundant-voice-LC
-        // content is typically spread across MANY superframes over the
-        // whole call, not just the first one after the initial Voice LC
-        // Header -- so keep evaluating every subsequent physical burst
-        // period indefinitely. reset_sync() (carrier lost / call ended)
-        // or a fresh arm_embedded_signalling() call (a new Voice LC
-        // Header) is what actually stops or restarts this, not a
-        // fragment count.
-        armed_embedded_signalling_.window_start_48 += PHYSICAL_BURST_PERIOD_BITS;
-    }
+    // Embedded-signalling windows sit where voice bursts B-F would have
+    // a sync word, so they never conflict with the sync search above.
+    emit_embedded_windows();
 }
 
 uint8_t DmrSymbolProcessor::history_bit(uint64_t absolute_bit) const {
@@ -227,8 +275,12 @@ void DmrSymbolProcessor::push_burst() {
     burst.errors = pending_burst_.errors;
     burst.sync_mag_ratio = pending_burst_.mag_ratio;
     burst.burst_start = pending_burst_.burst_start;
+    bool on_grid;
+    burst.slot_phase = slot_phase(pending_burst_.burst_start, burst.errors, burst.new_grid, on_grid);
 
-    if (pending_burst_.burst_start >= CACH_BITS) {
+    const bool bs_sourced = burst.sync_type == SyncType::BS_VOICE ||
+                            burst.sync_type == SyncType::BS_DATA;
+    if (bs_sourced && pending_burst_.burst_start >= CACH_BITS) {
         burst.has_cach = true;
         const uint64_t cach_start = pending_burst_.burst_start - CACH_BITS;
         for (size_t i = 0; i < CACH_BITS; i++) {
@@ -236,6 +288,8 @@ void DmrSymbolProcessor::push_burst() {
             burst.cach_bits[i >> 3] |= b << (7 - (i & 7));
         }
     }
+
+    if (on_grid) update_embedded_schedule(burst.sync_type, burst.slot_phase, burst.burst_start);
 
     if (on_burst_) on_burst_(burst);
 

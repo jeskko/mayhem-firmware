@@ -722,7 +722,10 @@ bool correct_errors(uint8_t codeword[DATASIZE + CHECKSUMSIZE], const Poly& syndr
     errors_found = roots.errors_num;
 
     if (roots.errors_num == 0) return false;  // syndrome was nonzero but no roots -- uncorrectable
-    if (roots.errors_num > CHECKSUMSIZE) return false;
+    // 3 parity symbols give minimum distance 4: only 1 symbol error is
+    // reliably correctable. Accepting a 2- or 3-root "correction" lets
+    // miscorrected codewords through.
+    if (roots.errors_num > 1) return false;
 
     for (int r = 0; r < roots.errors_num; r++) {
         if (roots.error_locations[r] >= DATASIZE + CHECKSUMSIZE) return false;

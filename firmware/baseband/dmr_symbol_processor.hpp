@@ -112,32 +112,31 @@ class DmrSymbolProcessor {
         // The CACH (Common Announcement Channel, Tier II only) field
         // immediately preceding this burst in the same continuous
         // bitstream -- ETSI TS 102 361-1 slot layout is CACH(24) +
-        // Burst(264) = 288 bits/30ms, contiguous, no gap, so this is
-        // just reading a bit further back into the same history buffer
-        // already used to extract the burst itself, not a separate
-        // capture path. has_cach is false only very near the start of
-        // reception, before 24 bits of real history exist yet before
-        // the first detected burst (Tier I DMO has no CACH at all --
-        // there's no false negative to worry about there since a DMO
-        // capture will just never carry Short LC, which is correct).
+        // Burst(264) = 288 bits/30ms, contiguous. Only BS-sourced bursts
+        // (BS voice/data sync) have one: MS-sourced, RC and direct-mode
+        // bursts have no CACH, so the 24 bits before them are not one.
         bool has_cach{false};
         std::array<uint8_t, 3> cach_bits{};  // 24 bits, MSB-first packed
 
         // Absolute bit position (this instance's own bit_count_ address
-        // space -- an opaque token to any caller across a process/core
-        // boundary, meaningful only when fed back into
-        // arm_embedded_signalling() on THIS SAME instance) of this
-        // burst's own first bit. Exists so a caller that recognizes this
-        // burst as a Voice LC Header (Golay data_type==1) can arm
-        // embedded-signalling extraction for the voice frames that
-        // follow -- see arm_embedded_signalling().
+        // space) of this burst's own first bit.
         uint64_t burst_start{0};
+
+        // Slot phase (0/1) of this burst on the 288-bit burst grid,
+        // counted from the previous sync burst -- see slot_phase(). Not a
+        // timeslot number: the UI maps phases to TS1/TS2 from CACH votes.
+        uint8_t slot_phase{0};
+        // True when this burst is off the previous grid (a new
+        // transmission with its own timing), so phase<->slot votes
+        // collected so far no longer apply.
+        bool new_grid{false};
     };
 
     // One physical burst period's worth of RAW 48-bit sync-field content
     // from a voice frame that doesn't carry a real sync word (its
     // sync-word bit position is repurposed for embedded signalling),
-    // delivered continuously once armed -- see arm_embedded_signalling().
+    // delivered for voice bursts B-F of each armed slot -- see
+    // update_embedded_schedule().
     // Deliberately NOT yet interpreted: bits48 is EMB(8) + embedded
     // signalling data(32) + EMB(8) exactly as laid out on air (ETSI
     // clause 6.1, figure 6.4), and the caller must QR(16,7,6)-decode the
@@ -150,6 +149,12 @@ class DmrSymbolProcessor {
     // dmr_symbol_processor's caller for the actual decode+state machine).
     struct EmbeddedSignallingWindow {
         std::array<uint8_t, 6> bits48{};  // 48 bits, MSB-first packed
+        uint8_t slot_phase{0};            // see Burst::slot_phase
+        // The CACH ahead of this voice burst, when the superframe is
+        // BS-sourced -- these bursts have no sync, so this is the only
+        // way their CACH (and its Short LC fragment) gets read.
+        bool has_cach{false};
+        std::array<uint8_t, 3> cach_bits{};  // 24 bits, MSB-first packed
     };
 
     using BurstHandler = std::function<void(const Burst&)>;
@@ -159,85 +164,23 @@ class DmrSymbolProcessor {
         : on_burst_(std::move(on_burst)), on_embedded_signalling_(std::move(on_embedded_signalling)) {
     }
 
-    // Arms continuous extraction of Embedded Signalling from the voice
-    // frames that follow a just-confirmed Voice LC Header burst (Golay
-    // data_type==1) -- call with that burst's own Burst::burst_start.
-    // Those frames don't carry a sync word at all (their sync-word bit
-    // position is repurposed for embedded signalling, relying on this
-    // receiver staying locked from frame A's own sync) -- fundamentally
-    // different from the sync-correlation-gated path Burst above comes
-    // from, which is why this needs its own explicit arming rather than
-    // happening automatically.
-    //
-    // CORRECTED DESIGN: an earlier version of this guessed a FIXED
-    // 4-fragment schedule by trial and error against real captures, and
-    // got it wrong in two independent ways -- confirmed by
-    // reading OpenGD77's firmware/source/hotspot/DMREmbeddedData.c and
-    // uiHotspot.c AND cross-checking against the primary ETSI TS 102
-    // 361-1 spec text directly (clauses 6.1, 7.1.3, 9.1.2, 9.3.3, B.2.1):
-    //
-    //  1. Which physical burst carries which of the 4 fragments is NOT
-    //     positional -- it's told to the receiver by the LCSS (Link
-    //     Control Start/Stop) field, 2 bits carried (along with Colour
-    //     Code and PI) inside a 16-bit QR(16,7,6)-protected "EMB" PDU
-    //     split across the FIRST and LAST 8 bits of the burst's 48-bit
-    //     sync-word-position field (ETSI clause 9.1.2/6.1, figure 6.4):
-    //     EMB(8) + embedded signalling data(32) + EMB(8). LCSS values
-    //     per ETSI table 9.20: 01=first, 11=continuation (appears twice),
-    //     10=last, 00=single-fragment (not used by the 4-fragment Full
-    //     LC case this decodes). The old code never looked at LCSS at
-    //     all -- it just assumed 4 fixed-position windows.
-    //  2. The 32-bit data payload itself sits at bits [8:40) of that
-    //     48-bit field, not [0:32) -- the old code read 8 bits too
-    //     early, always including part of the leading EMB half and
-    //     missing the trailing 8 bits of real payload.
-    //
-    // Both together fully explain why the old schedule passed the
-    // checksum well above chance (it was landing on genuinely
-    // LC-carrying bursts most of the time -- ETSI clause 7.1.3 guarantees
-    // all 4 fragments of one LC land within a single voice superframe,
-    // starting at the first non-SYNC/non-RC burst) while still decoding
-    // to nonsensical content (wrong bit offset within each fragment, and
-    // no reason to believe the reverse-order assembly it was also using
-    // -- ETSI clause B.2.1 confirms assembly is in plain forward
-    // transmission order, matrix rows placed in sequential bursts).
-    //
-    // Also confirmed independently during this investigation: OpenGD77's
-    // own QR1676.c has a genuine off-by-one bug in its reference decoder
-    // (`return code >> 7` where the correct shift is `>> 8`, verified by
-    // round-tripping all 128 possible info words through that same
-    // file's own encoder table: >>7 matches 1/128, >>8 matches 128/128
-    // and recovers every single-bit error) -- almost certainly unnoticed
-    // upstream because OpenGD77's own consumer of that function discards
-    // its return value and reads pre-correction raw bits instead. Fixed
-    // in our own port, dmr_qr1676.cpp (which lives with the rest of the
-    // FEC/parsing code, NOT here -- see EmbeddedSignallingWindow's
-    // comment for why). This is exactly the kind of
-    // resource-may-not-be-flawless case worth remembering: a reference
-    // implementation is a strong lead, not a certainty, and the primary
-    // ETSI spec text (fetched and cross-checked directly for this fix)
-    // is what actually settles it.
-    //
-    // This class's job is now only to hand up ONE raw 48-bit window per
-    // physical burst period, indefinitely, starting 1 period after the
-    // armed Voice LC Header -- no LCSS decode, no state machine, no
-    // fragment counting happens here. Unlike the old fixed-count
-    // schedule, this runs until reset_sync() (carrier lost) or a fresh
-    // call to this method (a new Voice LC Header) stops or restarts it,
-    // since a call's LC content typically repeats every superframe for
-    // the life of the call, not just once after the header.
-    //
-    // Known limitation: only ONE armed sequence is tracked at a time.
-    // If a call is active on BOTH TDMA slots simultaneously and each
-    // gets its own Voice LC Header, arming the second REPLACES the
-    // first's still-in-progress schedule -- accepted as a reasonable
-    // simplification (a single concurrent voice call is the overwhelmingly
-    // common case) rather than tracking two independent schedules.
-    void arm_embedded_signalling(uint64_t voice_lc_header_burst_start);
-
     // Feed one recovered symbol (the output of clock_recovery_'s
     // symbol_handler in proc_dmr.cpp -- i.e. already timing-recovered,
     // NOT a raw discriminator sample).
+    //
+    // Embedded signalling (voice bursts B-F) carries no sync word, so its
+    // windows are taken by timing from the slot's voice burst A: B starts
+    // one same-slot burst (2 physical bursts, 576 bits) after A, and so on.
+    // One schedule per slot phase -- the other slot's bursts sit in between
+    // and must never reach the same LCSS assembler.
+    //
+    // process_symbol() arms a phase on every voice sync and disarms it on a
+    // data/RC sync in the same phase. An armed schedule covers B-F of that
+    // superframe plus B-F of the next one, so a single missed voice sync
+    // costs nothing; it then expires unless re-armed.
+    //
+    // Survives reset_sync() (the carrier gate): inbound/simplex traffic
+    // only carries one slot, so the carrier drops between its bursts.
     void process_symbol(float raw_symbol);
 
     // Equivalent of proc_dmr.cpp's on_carrier_lost(): discard in-flight
@@ -274,6 +217,9 @@ class DmrSymbolProcessor {
    private:
     uint8_t history_bit(uint64_t absolute_bit) const;
     void push_burst();
+    uint8_t slot_phase(uint64_t burst_start, uint8_t errors, bool& new_grid, bool& on_grid);
+    void update_embedded_schedule(SyncType sync_type, uint8_t phase, uint64_t burst_start);
+    void emit_embedded_windows();
 
     // Automatic frequency correction. A real DMR signal's dibit levels
     // average to ~0 Hz over many symbols (mixed sync words and payload
@@ -335,15 +281,32 @@ class DmrSymbolProcessor {
         float mag_ratio{0.0f};
     } pending_burst_{};
 
-    // One physical burst PERIOD's length in bits -- Burst(264) + the
-    // CACH gap before it(24), Tier II's fixed slot cadence. Frame B is
-    // 2 of these after frame A's own burst_start, C is 4, D is 6, E is 8.
+    // One physical burst period in bits: CACH(24) + Burst(264).
     static constexpr uint64_t PHYSICAL_BURST_PERIOD_BITS = BURST_BITS + CACH_BITS;
+    // Same-slot burst period: the other slot's burst sits in between.
+    static constexpr uint64_t SLOT_BURST_PERIOD_BITS = 2 * PHYSICAL_BURST_PERIOD_BITS;
+    // Real bursts land within a symbol of the previous one's grid (0 or
+    // +-2 bits on the test recordings); false syncs inside a voice burst
+    // land tens of bits off. A burst further off than this starts a new
+    // grid -- unless its sync was marginal, in which case it is ignored
+    // for grid and embedded-schedule purposes.
+    static constexpr uint64_t GRID_TOLERANCE_BITS = 8;
+    // ...and so does one after more than ~1 s without a sync burst.
+    static constexpr uint64_t GRID_MAX_GAP_BITS = 9600;
+    // Superframe positions 1..5 (B-F) and 7..11 (B-F of the next one).
+    static constexpr uint8_t EMBEDDED_LAST_INDEX = 11;
+
+    bool has_anchor_{false};
+    uint64_t anchor_start_{0};
+    uint8_t anchor_phase_{0};
 
     struct ArmedEmbeddedSignalling {
         bool active{false};
-        uint64_t window_start_48{0};  // start of the NEXT physical burst period's 48-bit sync-position window
-    } armed_embedded_signalling_{};
+        uint64_t voice_a_start{0};  // burst_start of this superframe's voice burst A
+        bool bs_sourced{false};     // armed by a BS voice sync (bursts have a CACH)
+        uint8_t next_index{1};      // superframe position of the next window (A=0)
+    };
+    std::array<ArmedEmbeddedSignalling, 2> armed_embedded_signalling_{};
 
     BurstHandler on_burst_;
     EmbeddedSignallingHandler on_embedded_signalling_;

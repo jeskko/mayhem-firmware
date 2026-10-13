@@ -28,14 +28,13 @@
  * channel's own integrity check is the simple mod-31 checksum below)
  * and a different set of FLCO values:
  *   0x00/0x03 Group/Unit-to-Unit Voice -- same fields as Full LC,
- *     redundantly retransmitted every superframe. NOT decoded here yet
- *     (recognized but no field extraction) -- lower priority than
- *     Talker Alias since Full LC already gives this info at call start;
- *     the main value would be "late entry" (joining mid-call), not
- *     implemented.
- *   0x04 Talker Alias Header, 0x05-0x07 Talker Alias Blocks 1-3 --
- *     assembled into a display string below. Cross-checked against
- *     dsd-fme's own independent decode of the same content.
+ *     redundantly retransmitted every superframe; decoded with
+ *     parse_voice_lc() (dmr_fulllc.hpp), which gives late entry. So are
+ *     Capacity Plus's FLCO 0x04/0x07 voice LCs under FID 0x10.
+ *   0x04 Talker Alias Header, 0x05-0x07 Talker Alias Blocks 1-3 (FID
+ *     0x00 or 0x68; Motorola sends the same as FLCO 0x14-0x17 under FID
+ *     0x10) -- assembled into a display string below. Cross-checked
+ *     against dsd-fme's own independent decode of the same content.
  *   0x08 GPS Info -- NOT decoded here yet (recognized but no field
  *     extraction), a candidate follow-up once this dispatch shell
  *     exists.
@@ -53,6 +52,8 @@
 #include <array>
 #include <cstdint>
 #include <string>
+
+#include "dmr_fulllc.hpp"
 
 namespace dmr {
 
@@ -100,6 +101,7 @@ class TalkerAliasAssembler {
     // position) and to re-derive that position if a later block arrives
     // after the header already advanced bits_len_ past a gap.
     std::array<std::array<uint8_t, 56>, 3> pending_block_bits_{};
+    std::string last_text_{};
 };
 
 // Assembles the LCSS-driven 4-fragment BPTC(128,77) sequence from raw
@@ -134,6 +136,9 @@ class EmbeddedSignallingAssembler {
         bool bptc_failed{false};       // valid only if attempted_decode
         bool checksum_ok{false};       // valid only if attempted_decode && !bptc_failed
         uint8_t flco{0};               // valid only if checksum_ok
+        uint8_t fid{0};                // valid only if checksum_ok
+        bool has_voice_lc{false};      // a voice LC (see parse_voice_lc()) -- late entry
+        FullLcResult voice_lc{};
         bool talker_alias_updated{false};
         TalkerAliasResult talker_alias;
     };
@@ -144,15 +149,10 @@ class EmbeddedSignallingAssembler {
     // decode deliberately does not happen any earlier than this.
     Result add_window(const uint8_t bits48[6]);
 
-    // Clears the in-progress LCSS/BPTC assembly state only -- call on a
-    // confirmed new call (Voice LC Header, Golay data_type==1) to avoid
-    // completing a sequence using a stale fragment left over from
-    // before. Optional robustness touch, not required for correctness:
-    // a stale/misaligned assembly almost always fails the checksum
-    // anyway and gets silently discarded like any other noise.
-    // Deliberately does NOT reset the Talker Alias text itself (a
-    // separate, higher-level concern) -- call talker_alias() and reset
-    // that directly if a full new-call reset is wanted.
+    // Clears the in-progress LCSS/BPTC assembly AND the talker alias --
+    // call on a new call in this slot (Voice LC Header, or a voice LC
+    // with a new source). Otherwise a new talker's alias header would
+    // complete with the previous talker's blocks.
     void reset();
 
    private:
@@ -161,7 +161,7 @@ class EmbeddedSignallingAssembler {
                        SECOND,
                        THIRD } state_{State::NONE};
     std::array<uint8_t, 16> raw128_{};
-    TalkerAliasAssembler talker_alias_assembler_;
+    TalkerAliasAssembler talker_alias_assembler_{};
 };
 
 }  // namespace dmr

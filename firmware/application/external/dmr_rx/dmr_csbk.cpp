@@ -108,9 +108,10 @@ CapacityPlusChannelStatus csbk_decode_capacity_plus_channel_status(const CsbkHea
     return result;
 }
 
-ChannelGrant csbk_decode_channel_grant(const CsbkHeader& header) {
+ChannelGrant csbk_decode_channel_grant(const CsbkHeader& header, bool bs_sourced) {
     ChannelGrant result{};
     if (header.csbko < 48 || header.csbko > 56 || !header.crc_ok) return result;
+    if (header.csbko == 56 && !(bs_sourced && header.fid == 0x00)) return result;
 
     result.recognized = true;
     result.csbko = header.csbko;
@@ -194,7 +195,7 @@ ConnectPlusSlotTermination csbk_decode_connect_plus_slot_termination(const CsbkH
     return result;
 }
 
-StandardCsbk csbk_decode_standard(const CsbkHeader& header) {
+StandardCsbk csbk_decode_standard(const CsbkHeader& header, bool ms_data_sync) {
     StandardCsbk result{};
     if (!header.crc_ok) return result;
 
@@ -205,11 +206,12 @@ StandardCsbk csbk_decode_standard(const CsbkHeader& header) {
             result.recognized = true;
             result.type = StandardCsbkType::CHANNEL_TIMING;
             break;
-        case 38:  // NACK Response (NACK_Rsp) -- target k=16/w=24, source k=40/w=24
+        case 38:  // NACK Response (NACK_Rsp) -- TS 102 361-2 Table 7.6:
+                  // source k=16/w=24 first, then target k=40/w=24
             result.recognized = true;
             result.type = StandardCsbkType::NACK_RESPONSE;
-            result.target_address = static_cast<uint32_t>((header.data >> 24) & 0xFFFFFF);
-            result.source_address = static_cast<uint32_t>(header.data & 0xFFFFFF);
+            result.source_address = static_cast<uint32_t>((header.data >> 24) & 0xFFFFFF);
+            result.target_address = static_cast<uint32_t>(header.data & 0xFFFFFF);
             break;
         case 40:  // Announcements (C_BCAST) -- a_type k=0/w=5. Only the
                   // sub-type classification is decoded, see the header comment.
@@ -217,11 +219,11 @@ StandardCsbk csbk_decode_standard(const CsbkHeader& header) {
             result.type = StandardCsbkType::ANNOUNCEMENT;
             result.announcement_type = static_cast<uint8_t>((header.data >> 59) & 0x1F);
             break;
-        case 56:  // BS Outbound Activation (BS_Dwn_Act) -- same field
-                  // layout as NACK_Rsp. dsd-fme additionally gates this on
-                  // the burst's sync type being MS Data (it's normally an
-                  // inbound wake-up call); not checked here since CsbkHeader
-                  // doesn't carry sync type -- see caller if that matters.
+        case 56:  // BS Outbound Activation (BS_Dwn_Act) -- an inbound
+                  // wake-up, so only with an MS data sync (as dsd-fme
+                  // does). BS-sourced, it is TD_GRANT_MI instead.
+                  // Target k=16/w=24, source k=40/w=24.
+            if (!ms_data_sync) break;
             result.recognized = true;
             result.type = StandardCsbkType::BS_OUTBOUND_ACTIVATION;
             result.target_address = static_cast<uint32_t>((header.data >> 24) & 0xFFFFFF);

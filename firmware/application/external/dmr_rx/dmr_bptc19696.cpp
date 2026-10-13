@@ -38,12 +38,15 @@ constexpr uint8_t HAMMING_15_11_3_PARITY[11] = {
 // Single-bit-error correction for a systematic Hamming code: `data`
 // holds `n` data bits, `parity` holds the 4 received parity bits,
 // `table` gives each data bit's expected 4-bit parity contribution
-// (MSB-first). Returns false only if the syndrome doesn't match any
-// single data or parity bit (i.e. 2+ bit errors -- not correctable by
-// this code); true means the block was already correct or a single-bit
-// error was fixed in place.
+// (MSB-first). Returns HAMMING_CLEAN if the block was already correct,
+// HAMMING_FIXED if a single-bit error was fixed in place, or
+// HAMMING_BAD if the syndrome doesn't match any single bit (2+ errors).
+enum HammingStatus { HAMMING_CLEAN,
+                     HAMMING_FIXED,
+                     HAMMING_BAD };
+
 template <size_t N>
-bool hamming_fix(uint8_t* data, uint8_t* parity, const uint8_t (&table)[N]) {
+HammingStatus hamming_fix(uint8_t* data, uint8_t* parity, const uint8_t (&table)[N]) {
     uint8_t calc = 0;
     for (size_t i = 0; i < N; i++)
         if (data[i]) calc ^= table[i];
@@ -52,21 +55,21 @@ bool hamming_fix(uint8_t* data, uint8_t* parity, const uint8_t (&table)[N]) {
     for (int b = 0; b < 4; b++) received |= parity[b] << (3 - b);
 
     const uint8_t syndrome = calc ^ received;
-    if (syndrome == 0) return true;
+    if (syndrome == 0) return HAMMING_CLEAN;
 
     for (size_t i = 0; i < N; i++) {
         if (table[i] == syndrome) {
             data[i] ^= 1;
-            return true;
+            return HAMMING_FIXED;
         }
     }
     for (int b = 0; b < 4; b++) {
         if (syndrome == static_cast<uint8_t>(1u << (3 - b))) {
             parity[b] ^= 1;
-            return true;
+            return HAMMING_FIXED;
         }
     }
-    return false;
+    return HAMMING_BAD;
 }
 
 }  // namespace
@@ -82,16 +85,20 @@ bool bptc19696_decode(const uint8_t bits196[196], uint8_t out96[96]) {
         for (int c = 0; c < 15; c++)
             m[r][c] = raw[1 + r * 15 + c];
 
-    bool ok = true;
-    for (int pass = 0; pass < 5; pass++) {
+    // Alternate row and column passes until one pass finds every row and
+    // column clean. A block that needs several passes (a row with 2
+    // errors becomes fixable once the column pass has fixed one of them)
+    // still decodes; only one that never converges is rejected.
+    bool ok = false;
+    for (int pass = 0; pass < 6 && !ok; pass++) {
+        bool clean = true;
         // Row pass: Hamming(15,11,3) across each data row (cols 0-10
         // data, cols 11-14 parity), rows 0-8 only.
         for (int r = 0; r < 9; r++) {
             uint8_t data[11];
             std::memcpy(data, m[r], 11);
             uint8_t parity[4] = {m[r][11], m[r][12], m[r][13], m[r][14]};
-            const bool row_ok = hamming_fix(data, parity, HAMMING_15_11_3_PARITY);
-            ok = ok && row_ok;
+            if (hamming_fix(data, parity, HAMMING_15_11_3_PARITY) != HAMMING_CLEAN) clean = false;
             std::memcpy(m[r], data, 11);
             m[r][11] = parity[0];
             m[r][12] = parity[1];
@@ -105,14 +112,14 @@ bool bptc19696_decode(const uint8_t bits196[196], uint8_t out96[96]) {
             uint8_t data[9];
             for (int r = 0; r < 9; r++) data[r] = m[r][c];
             uint8_t parity[4] = {m[9][c], m[10][c], m[11][c], m[12][c]};
-            const bool col_ok = hamming_fix(data, parity, HAMMING_13_9_3_PARITY);
-            ok = ok && col_ok;
+            if (hamming_fix(data, parity, HAMMING_13_9_3_PARITY) != HAMMING_CLEAN) clean = false;
             for (int r = 0; r < 9; r++) m[r][c] = data[r];
             m[9][c] = parity[0];
             m[10][c] = parity[1];
             m[11][c] = parity[2];
             m[12][c] = parity[3];
         }
+        ok = clean;
     }
 
     int idx = 0;

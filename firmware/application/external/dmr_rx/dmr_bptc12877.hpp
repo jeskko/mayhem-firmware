@@ -42,24 +42,21 @@
  *     m[row][col] = bits128[col*8 + row].
  *   - Rows 0-6 (7 rows): each a systematic Hamming(16,11,4) codeword
  *     (11 data bits in cols 0-10, 5 parity bits in cols 11-15). Row 7
- *     is NOT a data row -- it's a simple per-column even-parity check
- *     across rows 0-6, used only as an extra (non-correcting) validity
- *     signal, not decoded here (the payload's own mod-31 checksum,
- *     checked by the caller, is the definitive accept/reject gate).
- *   - This implementation deliberately reuses the EXACT SAME
- *     HAMMING_15_11_3_PARITY table as dmr_bptc19696.cpp for the first
- *     4 of each row's 5 parity bits (confirmed byte-identical against
- *     dsd-fme's own Hamming_16_11_4_m_G generator matrix -- the 5th
- *     "extension" parity bit that turns 15,11,3 into 16,11,4 is
- *     exactly the standard SECDED construction, i.e. redundant with
- *     what's already validated elsewhere in this codebase). The
- *     extension bit and row-7 parity are read but not used for
- *     correction: full SECDED decoding would add double-error
- *     DETECTION on top of the single-error correction this already
- *     gets from reusing 15,11,3, but the mod-31 checksum already
- *     provides a definitive (if less surgical) way to reject a bad
- *     block, so skipping it is a deliberate scope-limiting choice, not
- *     an oversight.
+ *     is NOT a data row -- it's a per-column even-parity check across
+ *     rows 0-6.
+ *   - Cols 11-14 use the SAME HAMMING_15_11_3_PARITY table as
+ *     dmr_bptc19696.cpp (confirmed byte-identical against dsd-fme's
+ *     Hamming_16_11_4_m_G generator matrix); col 15 is the overall
+ *     parity bit that makes it SECDED (16,11,4).
+ *   - Decoding: a row with a non-zero syndrome and odd overall parity
+ *     has a single error, corrected as usual. A non-zero syndrome with
+ *     EVEN overall parity is a double error, which plain Hamming(15,11)
+ *     would silently miscorrect. If exactly one row has one, the row-7
+ *     column parity shows which columns are wrong, and the pair of
+ *     those columns whose syndromes XOR to the row's syndrome is
+ *     flipped. Seen on air: the "Jarkko" talker alias block on the
+ *     voice_call_ts2 recording has exactly this pattern. The caller's
+ *     mod-31 checksum remains the accept/reject gate.
  *   - Payload extraction (77 bits: 72 data + 5 checksum): rows 0-1
  *     cols 0-10 (11 bits each, 22 bits) + rows 2-6 cols 0-9 (10 bits
  *     each, 50 bits) = 72 data bits, then rows 2-6 col 10 (1 bit each,
@@ -82,9 +79,9 @@ namespace dmr {
 // checks these against a mod-31 sum of out72 -- see
 // dmr_embedded_lc.hpp -- since that check, not this function, is what
 // actually gates trust in the result).
-// Returns false if any row's Hamming(16,11,4) syndrome didn't match a
-// single-bit error pattern (i.e. that row is uncorrectable) -- callers
-// should treat out72/checksum5 as unreliable in that case.
+// Returns false if any row stayed uncorrectable (see the header comment
+// for what is corrected) -- callers should treat out72/checksum5 as
+// unreliable in that case.
 bool bptc12877_decode(const uint8_t bits128[128], uint8_t out72[72], uint8_t checksum5[5]);
 
 }  // namespace dmr

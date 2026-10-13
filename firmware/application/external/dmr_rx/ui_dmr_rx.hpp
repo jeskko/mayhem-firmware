@@ -116,6 +116,7 @@ class DmrChannelDecoder {
 // corrected content can still be a false-positive burst-sync/Golay
 // match rather than a real one.
 struct SlotLcState {
+    std::string label{};  // slot name at the last confirmed update, see DmrRxView::slot_label()
     uint32_t talkgroup{0};
     uint32_t talker{0};
     bool is_group{false};
@@ -129,7 +130,7 @@ struct SlotLcState {
 
     // Returns true if `confirmed` (and therefore the display) changed.
     bool update(const dmr::FullLcResult& lc);
-    std::string format(const char* label) const;
+    std::string format(const char* row_label) const;
 };
 
 class DmrRxView : public View {
@@ -144,22 +145,37 @@ class DmrRxView : public View {
     RxRadioState radio_state_{};
     app_settings::SettingsManager settings_{"rx_dmr", app_settings::Mode::RX};
 
-    // Tier II strictly alternates TS1/TS2 every burst; neither Slot Type
-    // nor Full LC carries a per-burst slot-number field at this layer,
-    // so this free-running counter is the fallback when CACH isn't
-    // available (very start of reception, before enough bit history
-    // exists, or genuine Tier I DMO which has no CACH at all). It has no
-    // absolute reference of its own: a missed/unsynced burst, or simply
-    // starting reception mid-cycle, desyncs it from reality until CACH's
-    // TC bit resynchronizes it in on_data_dmr() (see there) or the next
-    // carrier drop resets it outright.
-    bool next_slot_is_ts2_{false};
-    SlotLcState slot_lc_[2]{};  // index 0 = TS1, 1 = TS2
+    // Which timeslot a burst is on. The baseband gives each burst a slot
+    // phase (0/1) on the burst grid; the CACH TC bit of BS-sourced bursts
+    // votes on which phase is TS1 -- only TACT words that needed no
+    // correction vote, since Hamming(7,4) "corrects" any word. Votes are
+    // cleared when the baseband starts a new grid (a new transmission
+    // with its own timing). As in datarx dmr.py _phase()/_cach().
+    uint8_t slot_votes_[2][2]{};  // [phase][tc]
+    bool phase_ms_[2]{};          // last sync seen in this phase was MS-sourced
+    // Display row (0=TS1 line, 1=TS2 line) for a phase: the voted
+    // timeslot, or the phase itself while there are no votes.
+    size_t slot_row(uint8_t phase) const;
+    // "TS1"/"TS2" once voted; otherwise "MSa"/"MSb" for MS-sourced
+    // (inbound/direct-mode) traffic, which has no CACH, or "TS?".
+    const char* slot_label(uint8_t phase) const;
+    void vote_slot(uint8_t phase, const dmr::CachHeader& cach);
+    void clear_slot_state();
+    SlotLcState slot_lc_[2]{};  // index = display row, see slot_row()
+
+    // Source of the call last seen in each phase -- a new one resets that
+    // phase's talker alias (see EmbeddedSignallingAssembler::reset()).
+    uint32_t phase_source_[2]{};
+    void note_call(uint8_t phase, const dmr::FullLcResult& lc);
+    void show_lc(uint8_t phase, const dmr::FullLcResult& lc);
 
     // CACH-carried Short LC is a completely separate PDU/FEC path from
     // the burst content above (see dmr_cach.hpp) -- Tier II only, no
     // relation to next_slot_is_ts2_'s tracking.
     dmr::ShortLcAssembler short_lc_assembler_{};
+    void handle_short_lc(const dmr::CachHeader& cach);
+    bool has_shown_activity_{false};
+    dmr::ShortLcResult::ActivityUpdate last_activity_{};
 
     // A repeater's site beacon repeats constantly regardless of call
     // activity (far more often than Full LC/CSBK) -- update the display
@@ -191,14 +207,10 @@ class DmrRxView : public View {
     bool has_shown_connect_plus_adjacent_{false};
     dmr::ConnectPlusAdjacentSites last_connect_plus_adjacent_{};
 
-    // Embedded Signalling (Talker Alias/GPS Info/redundant Full LC from
-    // voice frames B-F, see dmr_embedded_lc.hpp's EmbeddedSignallingAssembler
-    // and DmrSymbolProcessor::arm_embedded_signalling()). Deliberately a
-    // SINGLE instance, not per-slot -- the M4 front end that feeds this
-    // only tracks one armed sequence at a time regardless of slot (see
-    // arm_embedded_signalling()'s own "Known limitation" comment), so
-    // matching that here rather than pretending per-slot tracking exists.
-    dmr::EmbeddedSignallingAssembler embedded_signalling_assembler_{};
+    // Embedded Signalling (Talker Alias/GPS Info/redundant voice LC from
+    // voice bursts B-F, see dmr_embedded_lc.hpp), one assembler per slot
+    // phase -- the baseband tags each window with its phase.
+    dmr::EmbeddedSignallingAssembler embedded_signalling_assembler_[2]{};
 
     RxFrequencyField field_frequency{{UI_POS_X(0), UI_POS_Y(0)}, nav_};
     RFAmpField field_rf_amp{{UI_POS_X(13), UI_POS_Y(0)}};

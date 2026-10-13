@@ -56,7 +56,12 @@ namespace dmr {
 // for these 17 bits at all -- whatever protection exists is applied to
 // the assembled 4-fragment PDU instead, see ShortLcAssembler below).
 struct CachHeader {
-    bool tact_ok{false};                 // Hamming(7,4,3) found <=1 bit error (or none)
+    // Hamming(7,4,3) is a perfect code: every received word decodes to
+    // some codeword, so tact_ok is always true and says nothing about
+    // whether the result is right. tact_clean (no correction needed) is
+    // the trustworthy one -- use it before letting TC pick a slot.
+    bool tact_ok{false};
+    bool tact_clean{false};
     bool at{false};                      // Access Type
     bool tc{false};                      // TDMA channel (which of TS1/TS2 the NEXT burst is)
     uint8_t lcss{0};                     // Link Control Start/Stop: 0=single,1=first,2=last,3=continuation
@@ -94,7 +99,9 @@ constexpr int CACH_INTERLEAVE[24] = {
 // corrected in place; returns false only on an uncorrectable (2+ bit)
 // error. Parity contributions/one-hot syndromes confirmed against
 // dsd-fme's src/fec.c Hamming_7_4_m_H/Hamming_7_4_m_corr tables.
-inline bool hamming_7_4_decode(uint8_t bits[7]) {
+// Returns true if the word decoded; `clean` is set when it needed no
+// correction.
+inline bool hamming_7_4_decode(uint8_t bits[7], bool& clean) {
     constexpr uint8_t data_syndrome[4] = {0b101, 0b111, 0b110, 0b011};
 
     uint8_t calc = 0;
@@ -103,7 +110,8 @@ inline bool hamming_7_4_decode(uint8_t bits[7]) {
 
     uint8_t received = static_cast<uint8_t>((bits[4] << 2) | (bits[5] << 1) | bits[6]);
     const uint8_t syndrome = calc ^ received;
-    if (syndrome == 0) return true;
+    clean = syndrome == 0;
+    if (clean) return true;
 
     for (int i = 0; i < 4; i++) {
         if (data_syndrome[i] == syndrome) {
@@ -133,7 +141,7 @@ inline CachHeader cach_decode_header(const uint8_t cach_bits[24]) {
 
     uint8_t tact[7];
     for (int i = 0; i < 7; i++) tact[i] = field[i];
-    h.tact_ok = detail::hamming_7_4_decode(tact);
+    h.tact_ok = detail::hamming_7_4_decode(tact, h.tact_clean);
     h.at = tact[0] != 0;
     h.tc = tact[1] != 0;
     h.lcss = static_cast<uint8_t>((tact[2] << 1) | tact[3]);
@@ -183,12 +191,11 @@ class ShortLcAssembler {
     // Returns true if `result` was populated (a complete, CRC-verified
     // Short LC PDU just finished assembling).
     bool add_fragment(const CachHeader& header, ShortLcResult& result);
-
-   private:
     void reset();
 
+   private:
     uint8_t fragments_[4][17]{};
-    int next_index_{-1};  // -1 = not currently assembling
+    int next_index_{-1};  // index the next fragment must have; -1 = not assembling
 
     // Working buffers for the assembly step, held as members rather
     // than locals in add_fragment() -- this runs on every single burst

@@ -145,7 +145,7 @@ CapacityPlusChannelStatus csbk_decode_capacity_plus_channel_status(const CsbkHea
 // live one is seen.
 struct ChannelGrant {
     bool recognized{false};
-    uint8_t csbko{0};             // which of the 9 grant variants (48-56)
+    uint8_t csbko{0};             // which grant variant: 48-55, or 56 (TD_GRANT_MI)
     uint16_t logical_channel{0};  // 12-bit logical/physical channel number
     uint8_t timeslot{0};          // 0 or 1 -- which TDMA slot this grant is on
     bool emergency{false};
@@ -153,7 +153,11 @@ struct ChannelGrant {
     uint32_t source_address{0};
 };
 
-ChannelGrant csbk_decode_channel_grant(const CsbkHeader& header);
+// CSBKO 56 is TD_GRANT_MI (Tier III, TS 102 361-4 Table B.1) only on a
+// BS-sourced FID 0 CSBK; with an MS data sync the same opcode is
+// BS_Dwn_Act (see csbk_decode_standard()). bs_sourced is whether the
+// burst carried a BS voice/data sync.
+ChannelGrant csbk_decode_channel_grant(const CsbkHeader& header, bool bs_sourced);
 
 // Motorola Connect Plus (FID=0x06) -- a DIFFERENT CSBK vendor family from
 // Capacity Plus/Cap Max (FID=0x10) above, with its own opcode numbers
@@ -220,7 +224,7 @@ enum class StandardCsbkType : uint8_t {
     CHANNEL_TIMING,          // CSBKO=7 (CT_CSBK), no fields
     NACK_RESPONSE,           // CSBKO=38/0x26 (NACK_Rsp)
     ANNOUNCEMENT,            // CSBKO=40/0x28 (C_BCAST)
-    BS_OUTBOUND_ACTIVATION,  // CSBKO=56/0x38 (BS_Dwn_Act) -- normally MS->BS wake-up
+    BS_OUTBOUND_ACTIVATION,  // CSBKO=56/0x38 (BS_Dwn_Act), MS data sync only
     MOVE,                    // CSBKO=57/0x39 (C_MOVE), no fields
     PREAMBLE,                // CSBKO=61/0x3D
 };
@@ -246,7 +250,10 @@ struct StandardCsbk {
     uint8_t preamble_blocks{0};     // blocks to follow
 };
 
-StandardCsbk csbk_decode_standard(const CsbkHeader& header);
+// ms_data_sync: the burst carried an MS data sync. CSBKO 56 is
+// BS_Dwn_Act only then (an inbound wake-up); on a BS-sourced burst it is
+// a grant instead (see csbk_decode_channel_grant()).
+StandardCsbk csbk_decode_standard(const CsbkHeader& header, bool ms_data_sync);
 
 }  // namespace dmr
 

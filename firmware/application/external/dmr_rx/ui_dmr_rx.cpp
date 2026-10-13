@@ -141,16 +141,16 @@ bool SlotLcState::update(const dmr::FullLcResult& lc) {
                          talker != lc.source_address;
     talkgroup = lc.dest_address;
     talker = lc.source_address;
-    is_group = (lc.flco == static_cast<uint8_t>(dmr::Flco::GROUP_VOICE));
+    is_group = lc.is_group;
     service_options = lc.service_options;
     fid = lc.fid;
     confirmed = true;
     return changed;
 }
 
-std::string SlotLcState::format(const char* label) const {
-    if (!confirmed) return std::string(label) + ": --";
-    std::string s = std::string(label) + (is_group ? " TG:" : " ID:") + to_string_dec_uint(talkgroup) +
+std::string SlotLcState::format(const char* row_label) const {
+    if (!confirmed) return std::string(row_label) + ": --";
+    std::string s = label + (is_group ? " TG:" : " ID:") + to_string_dec_uint(talkgroup) +
                     " SRC:" + to_string_dec_uint(talker);
     const auto so = dmr::decode_service_options(service_options, fid);
     if (so.emergency) s += " EMERG";
@@ -185,6 +185,59 @@ void DmrRxView::log(const std::string& line) {
     app_debug_log::push(line);
 }
 
+size_t DmrRxView::slot_row(uint8_t phase) const {
+    const auto& v = slot_votes_[phase & 1];
+    if (v[0] == 0 && v[1] == 0) return phase & 1;
+    return v[1] > v[0] ? 1 : 0;
+}
+
+const char* DmrRxView::slot_label(uint8_t phase) const {
+    const auto& v = slot_votes_[phase & 1];
+    if (v[0] != 0 || v[1] != 0) return v[1] > v[0] ? "TS2" : "TS1";
+    if (phase_ms_[phase & 1]) return (phase & 1) ? "MSb" : "MSa";
+    return "TS?";
+}
+
+void DmrRxView::vote_slot(uint8_t phase, const dmr::CachHeader& cach) {
+    if (!cach.tact_clean) return;
+    auto& v = slot_votes_[phase & 1];
+    v[cach.tc ? 1 : 0]++;
+    // Decay, so a changed mapping wins within a few dozen bursts.
+    if (v[0] + v[1] > 64) {
+        v[0] /= 2;
+        v[1] /= 2;
+    }
+}
+
+void DmrRxView::clear_slot_state() {
+    for (size_t p = 0; p < 2; p++) {
+        slot_votes_[p][0] = 0;
+        slot_votes_[p][1] = 0;
+        phase_ms_[p] = false;
+        phase_source_[p] = 0;
+        embedded_signalling_assembler_[p].reset();
+    }
+}
+
+void DmrRxView::note_call(uint8_t phase, const dmr::FullLcResult& lc) {
+    if (phase_source_[phase & 1] != lc.source_address) {
+        phase_source_[phase & 1] = lc.source_address;
+        embedded_signalling_assembler_[phase & 1].reset();
+    }
+}
+
+void DmrRxView::show_lc(uint8_t phase, const dmr::FullLcResult& lc) {
+    auto& state = slot_lc_[slot_row(phase)];
+    if (!state.update(lc)) return;
+    state.label = slot_label(phase);
+    text_ts1.set(slot_lc_[0].format("TS1"));
+    text_ts2.set(slot_lc_[1].format("TS2"));
+    // Logged (not just displayed) so a slot<->talkgroup correlation can
+    // be checked over time via `applog` -- the on-screen lines only show
+    // the latest confirmed value per slot.
+    log(state.format(state.label.c_str()));
+}
+
 void DmrRxView::on_freqchg(int64_t freq) {
     field_frequency.set_value(freq);
 
@@ -193,7 +246,9 @@ void DmrRxView::on_freqchg(int64_t freq) {
     // would otherwise keep showing (and keep being logged) as if it
     // were still current, which is actively misleading when retuning
     // between completely unrelated systems.
-    next_slot_is_ts2_ = false;
+    clear_slot_state();
+    short_lc_assembler_.reset();
+    has_shown_activity_ = false;
     slot_lc_[0] = SlotLcState{};
     slot_lc_[1] = SlotLcState{};
     has_shown_site_ = false;
@@ -221,25 +276,19 @@ void DmrRxView::on_freqchg(int64_t freq) {
 void DmrRxView::on_data_dmr(const DmrBurstMessage& message) {
     auto result = decoder.decode_burst(message);
 
-    // CACH's TC bit (Tier II only) is authoritative ground truth for
-    // which slot THIS burst is on -- ETSI TS 102 361-1 SS6.3, confirmed
-    // against dsd-fme's src/dmr_bs.c (`state->currentslot =
-    // tact_bits[1]`, the exact same bit this project's own
-    // CachHeader::tc is: false=TS1, true=TS2). Decoded once here (ahead
-    // of decode_burst()'s own has_cach handling below, which reuses this
-    // same `cach` for Short LC) specifically to resync
-    // next_slot_is_ts2_ -- see its declaration for why the free-running
-    // fallback alone can't self-correct a bad starting guess.
-    dmr::CachHeader cach{};
-    if (message.has_cach) cach = dmr::cach_decode_header(message.cach_payload.data());
+    if (message.new_grid) clear_slot_state();
+    const uint8_t phase = message.slot_phase & 1;
+    phase_ms_[phase] = message.sync_type == 2 || message.sync_type == 3;
 
-    int slot;
-    if (cach.tact_ok) {
-        slot = cach.tc ? 1 : 0;
-        next_slot_is_ts2_ = !cach.tc;  // the *next* burst is the other slot
-    } else {
-        slot = next_slot_is_ts2_ ? 1 : 0;
-        next_slot_is_ts2_ = !next_slot_is_ts2_;
+    // CACH only exists ahead of BS-sourced bursts (the baseband sets
+    // has_cach only for those). Its TC bit says which timeslot this burst
+    // is on -- ETSI TS 102 361-1 SS6.3, dsd-fme src/dmr_bs.c
+    // (`state->currentslot = tact_bits[1]`) -- and is counted as a vote
+    // for this burst's phase rather than trusted outright.
+    dmr::CachHeader cach{};
+    if (message.has_cach) {
+        cach = dmr::cach_decode_header(message.cach_payload.data());
+        vote_slot(phase, cach);
     }
 
     // Single reusable line buffer for this whole function, mutated with
@@ -271,7 +320,9 @@ void DmrRxView::on_data_dmr(const DmrBurstMessage& message) {
         line += to_string_dec_uint(result.data_type);
         text_dt.set(line);
 
-        line = decoder.get_sync_name(result.sync_type);
+        line = slot_label(phase);
+        line += " ";
+        line += decoder.get_sync_name(result.sync_type);
         line += " CC:";
         line += to_string_dec_uint(result.color_code);
         line += " DT:";
@@ -288,18 +339,14 @@ void DmrRxView::on_data_dmr(const DmrBurstMessage& message) {
         line += to_string_decimal(message.sync_mag_ratio, 1);
         log(line);
 
-        // Voice LC Header marks the start of a brand new call -- reset
-        // the embedded-signalling LCSS/BPTC assembly state so it
-        // doesn't try to complete a sequence using a stale fragment
-        // left over from before (a previous call, or noise). See
-        // EmbeddedSignallingAssembler::reset()'s own comment for why
-        // this is a robustness touch, not strictly required for
-        // correctness. The M4 side's own window-tracking re-arm (see
-        // DmrSymbolProcessor::arm_embedded_signalling()) happens
-        // unconditionally on every confirmed voice-sync burst
-        // independently of this.
-        if (result.data_type == DmrChannelDecoder::DATA_TYPE_VOICE_LC_HEADER) {
-            embedded_signalling_assembler_.reset();
+        // Voice LC Header marks the start of a new call in this slot:
+        // drop any half-assembled embedded LC and the previous talker's
+        // alias.
+        // (Data sync only: a voice burst has no Slot Type, so its Golay
+        // result is meaningless.)
+        if ((result.sync_type == 1 || result.sync_type == 3) &&
+            result.data_type == DmrChannelDecoder::DATA_TYPE_VOICE_LC_HEADER) {
+            embedded_signalling_assembler_[phase].reset();
         }
     }
 
@@ -309,15 +356,9 @@ void DmrRxView::on_data_dmr(const DmrBurstMessage& message) {
     // with a noisy Slot Type field can still yield a trustworthy Full
     // LC/CSBK decode, and one shouldn't be suppressed by the other's
     // unrelated failure.
-    if (result.has_full_lc && slot_lc_[static_cast<size_t>(slot)].update(result.full_lc)) {
-        text_ts1.set(slot_lc_[0].format("TS1"));
-        text_ts2.set(slot_lc_[1].format("TS2"));
-        // Logged (not just displayed) specifically so a slot<->talkgroup
-        // correlation can be checked over time via `applog` -- the
-        // on-screen TS1/TS2 fields alone only show the LATEST confirmed
-        // value per slot, which could miss a transient call on the
-        // "wrong" slot that got overwritten before anyone looked.
-        log(slot_lc_[static_cast<size_t>(slot)].format(slot == 0 ? "TS1" : "TS2"));
+    if (result.has_full_lc) {
+        note_call(phase, result.full_lc);
+        show_lc(phase, result.full_lc);
     }
 
     // Most CSBK opcode fields for this control channel's vendor/opcode
@@ -396,8 +437,9 @@ void DmrRxView::on_data_dmr(const DmrBurstMessage& message) {
         // control-channel dialects rather than tied to one. This is the
         // actual per-call channel/talkgroup announcement mechanism, as
         // opposed to the FID=0x10-specific site/status messages above.
+        const bool bs_sourced = result.sync_type == 0 || result.sync_type == 1;
         if (result.csbk.csbko >= 48 && result.csbk.csbko <= 56) {
-            const auto grant = dmr::csbk_decode_channel_grant(result.csbk);
+            const auto grant = dmr::csbk_decode_channel_grant(result.csbk, bs_sourced);
             if (grant.recognized) {
                 line = "GRANT O:";
                 line += to_string_dec_uint(grant.csbko);
@@ -475,7 +517,7 @@ void DmrRxView::on_data_dmr(const DmrBurstMessage& message) {
         // Standard ETSI CSBK family -- see dmr_csbk.hpp. Logged every
         // time since these are transient (call-related or one-off),
         // same as GRANT/CONP above.
-        const auto std_csbk = dmr::csbk_decode_standard(result.csbk);
+        const auto std_csbk = dmr::csbk_decode_standard(result.csbk, result.sync_type == 3);
         if (std_csbk.recognized) {
             switch (std_csbk.type) {
                 case dmr::StandardCsbkType::CHANNEL_TIMING:
@@ -520,57 +562,96 @@ void DmrRxView::on_data_dmr(const DmrBurstMessage& message) {
         }
     }
 
-    // CACH/Short LC is a completely separate PDU/FEC path from the
-    // burst content above (Tier II only -- see dmr_cach.hpp), assembled
-    // across 4 consecutive bursts regardless of the has_full_lc/has_csbk
-    // outcome for any of them. Only updates the display when the value
-    // actually changes (a site beacon repeats constantly regardless of
-    // call activity) -- to avoid spamming an unchanging value. `cach`
-    // itself was already decoded above (for TS1/TS2 resync), reused
-    // here rather than decoded twice.
-    if (message.has_cach) {
-        dmr::ShortLcResult slc;
-        if (short_lc_assembler_.add_fragment(cach, slc) && slc.recognized &&
-            slc.has_capacity_plus_site) {
-            const bool changed = !has_shown_site_ ||
-                                 last_site_id_ != slc.capacity_plus_site.site_id ||
-                                 last_rest_channel_ != slc.capacity_plus_site.rest_channel;
-            if (changed) {
-                has_shown_site_ = true;
-                last_site_id_ = slc.capacity_plus_site.site_id;
-                last_rest_channel_ = slc.capacity_plus_site.rest_channel;
-                line = "SITE: ";
-                line += to_string_dec_uint(last_site_id_);
-                line += " R:";
-                line += to_string_dec_uint(last_rest_channel_);
-                text_site.set(line);
-            }
+    if (message.has_cach) handle_short_lc(cach);
+}
+
+// CACH/Short LC is a completely separate PDU/FEC path from the burst
+// content (Tier II only -- see dmr_cach.hpp), assembled across 4
+// consecutive CACHs; fed from both sync bursts and syncless voice bursts
+// (via the embedded-signalling windows). Only updates the display/log
+// when the value actually changes -- these repeat constantly regardless
+// of call activity.
+void DmrRxView::handle_short_lc(const dmr::CachHeader& cach) {
+    dmr::ShortLcResult slc;
+    if (!short_lc_assembler_.add_fragment(cach, slc) || !slc.recognized) return;
+
+    std::string line;
+    if (slc.has_capacity_plus_site) {
+        const bool changed = !has_shown_site_ ||
+                             last_site_id_ != slc.capacity_plus_site.site_id ||
+                             last_rest_channel_ != slc.capacity_plus_site.rest_channel;
+        if (changed) {
+            has_shown_site_ = true;
+            last_site_id_ = slc.capacity_plus_site.site_id;
+            last_rest_channel_ = slc.capacity_plus_site.rest_channel;
+            line = "SITE: ";
+            line += to_string_dec_uint(last_site_id_);
+            line += " R:";
+            line += to_string_dec_uint(last_rest_channel_);
+            text_site.set(line);
+            log(line);
+        }
+    }
+    if (slc.has_activity) {
+        const auto& a = slc.activity;
+        const bool changed = !has_shown_activity_ ||
+                             last_activity_.ts1_activity != a.ts1_activity ||
+                             last_activity_.ts2_activity != a.ts2_activity ||
+                             last_activity_.ts1_hash != a.ts1_hash ||
+                             last_activity_.ts2_hash != a.ts2_hash;
+        if (changed) {
+            has_shown_activity_ = true;
+            last_activity_ = a;
+            // Activity ID per slot (0 = idle) and the 8-bit hash
+            // of the call's address.
+            line = "ACTIVITY TS1:";
+            line += to_string_hex(a.ts1_activity, 1);
+            line += "/";
+            line += to_string_hex(a.ts1_hash, 2);
+            line += " TS2:";
+            line += to_string_hex(a.ts2_activity, 1);
+            line += "/";
+            line += to_string_hex(a.ts2_hash, 2);
+            log(line);
         }
     }
 }
 
 void DmrRxView::on_data_embedded_signalling(const DmrEmbeddedSignallingMessage& message) {
-    const auto result = embedded_signalling_assembler_.add_window(message.payload.data());
+    const uint8_t phase = message.slot_phase & 1;
+    if (message.has_cach) {
+        const auto cach = dmr::cach_decode_header(message.cach_payload.data());
+        vote_slot(phase, cach);
+        handle_short_lc(cach);
+    }
+
+    const auto result = embedded_signalling_assembler_[phase].add_window(message.payload.data());
     if (!result.checksum_ok) return;
 
-    // Logs every successful checksum-verified embedded LC fragment, not
-    // just Talker Alias -- a decode with FLCO 0x00/0x03 (redundant
-    // Group/Unit-to-Unit Voice LC, not decoded further yet -- see
-    // dmr_embedded_lc.hpp) or 0x08 (GPS Info, also not decoded further
-    // yet) would otherwise be completely invisible even when the
-    // underlying LCSS/BPTC/checksum mechanism is working correctly.
-    std::string line = "EMBEDDED LC: FLCO=0x";
+    // Voice LC repeated in the superframe: late entry into a call whose
+    // Voice LC Header was missed.
+    if (result.has_voice_lc) {
+        note_call(phase, result.voice_lc);
+        show_lc(phase, result.voice_lc);
+        return;
+    }
+
+    if (result.talker_alias_updated && result.talker_alias.updated) {
+        std::string line = slot_label(phase);
+        line += " ALIAS: ";
+        line += result.talker_alias.text;
+        log(line);
+        return;
+    }
+
+    // Anything else (GPS Info, vendor LCs) isn't decoded further yet --
+    // logged so it isn't invisible.
+    if (result.talker_alias_updated) return;
+    std::string line = slot_label(phase);
+    line += " EMB LC FLCO:";
     line += to_string_hex(result.flco, 2);
-    log(line);
-
-    // Full LC (0x00 Group/0x03 Unit-to-unit) and GPS Info (0x08) are
-    // recognized but not decoded further yet -- see dmr_embedded_lc.hpp
-    // for why (Full LC already gives this at call start; GPS Info is a
-    // lower-priority follow-up). Only Talker Alias gets its own text.
-    if (!result.talker_alias_updated || !result.talker_alias.updated) return;
-
-    line = "TALKER ALIAS: ";
-    line += result.talker_alias.text;
+    line += " FID:";
+    line += to_string_hex(result.fid, 2);
     log(line);
 }
 

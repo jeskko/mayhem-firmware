@@ -96,29 +96,18 @@ void DmrProcessor::push_burst_to_ui(const DmrSymbolProcessor::Burst& burst) {
             burst.errors,
             burst.has_cach,
             burst.cach_bits.data(),
-            burst.sync_mag_ratio));
-
-    // Re-anchor embedded-signalling window tracking on EVERY confirmed
-    // voice-sync burst, not just a just-recognized Voice LC Header --
-    // ETSI clause 7.1.3 has a call's LC content repeating every
-    // superframe for the call's whole duration, and each superframe's
-    // own frame A gives a fresh, precise anchor for that superframe's
-    // B-F windows. This decision only needs sync_type (available here,
-    // on M4, straight off sync correlation) -- unlike deciding whether
-    // to RESET the M0-side LCSS/BPTC assembly state on a genuine new
-    // call, which needs Golay-decoded data_type and so happens on M0
-    // instead (see DmrRxView::on_data_dmr()) -- no M0->M4 round-trip
-    // needed for arming itself. See arm_embedded_signalling()'s own
-    // comment for the full derivation.
-    if (burst.sync_type == DmrSymbolProcessor::SyncType::BS_VOICE ||
-        burst.sync_type == DmrSymbolProcessor::SyncType::MS_VOICE) {
-        symbol_processor_.arm_embedded_signalling(burst.burst_start);
-    }
+            burst.sync_mag_ratio,
+            burst.slot_phase,
+            burst.new_grid));
 }
 
 void DmrProcessor::push_embedded_signalling_to_ui(const DmrSymbolProcessor::EmbeddedSignallingWindow& window) {
     shared_memory.application_queue.push(
-        DmrEmbeddedSignallingMessage(window.bits48.data()));
+        DmrEmbeddedSignallingMessage(
+            window.bits48.data(),
+            window.slot_phase,
+            window.has_cach,
+            window.cach_bits.data()));
 }
 
 void DmrProcessor::on_message(const Message* const msg) {

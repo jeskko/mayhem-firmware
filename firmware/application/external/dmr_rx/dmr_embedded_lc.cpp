@@ -133,9 +133,10 @@ void TalkerAliasAssembler::rebuild_text(TalkerAliasResult& out) {
         text.push_back(decode_char(bits_to_u32(&bits_[bit_pos], char_size_), char_size_));
     }
 
-    out.updated = (text != out.text) || text.size() > 0;
+    out.updated = text != last_text_;
     out.complete = text.size() == total_chars;
     out.text = text;
+    last_text_ = text;
 }
 
 EmbeddedSignallingAssembler::Result EmbeddedSignallingAssembler::add_window(const uint8_t bits48[6]) {
@@ -195,11 +196,26 @@ EmbeddedSignallingAssembler::Result EmbeddedSignallingAssembler::add_window(cons
 
     result.checksum_ok = true;
 
-    // data72 is one-bit-per-byte (matching bptc12877_decode's out72
-    // convention) -- extract FLCO (bits 2-7, after PF+Reserved) by hand.
-    uint8_t flco = 0;
-    for (int i = 0; i < 6; i++) flco = static_cast<uint8_t>((flco << 1) | (data72[2 + i] & 1));
+    uint8_t lc[9];
+    for (int i = 0; i < 9; i++) lc[i] = static_cast<uint8_t>(bits_to_u32(&data72[i * 8], 8));
+    uint8_t flco = lc[0] & 0x3FU;
+    const uint8_t fid = lc[1];
     result.flco = flco;
+    result.fid = fid;
+
+    if (parse_voice_lc(lc, result.voice_lc)) {
+        result.has_voice_lc = true;
+        return result;
+    }
+
+    // Motorola sends the standard alias/GPS FLCOs offset by 0x10 under
+    // its own FID; the payload is the same.
+    bool alias_fid = fid == 0x00U || fid == 0x68U;
+    if (fid == 0x10U && flco >= 0x14U && flco <= 0x17U) {
+        flco = static_cast<uint8_t>(flco - 0x10U);
+        alias_fid = true;
+    }
+    if (!alias_fid) return result;
 
     uint8_t data56[56];
     for (int i = 0; i < 56; i++) data56[i] = data72[16 + i];
@@ -215,6 +231,7 @@ EmbeddedSignallingAssembler::Result EmbeddedSignallingAssembler::add_window(cons
 
 void EmbeddedSignallingAssembler::reset() {
     state_ = State::NONE;
+    talker_alias_assembler_.reset();
 }
 
 }  // namespace dmr

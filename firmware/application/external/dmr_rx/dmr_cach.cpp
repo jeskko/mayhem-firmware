@@ -134,34 +134,24 @@ bool ShortLcAssembler::add_fragment(const CachHeader& header, ShortLcResult& res
         return false;
     }
 
-    // Mirrors dsd-fme's dmr_cach() sequencing exactly: LCSS=1 (first)
-    // resets to index 0, LCSS=3 (continuation) advances, LCSS=2 (last)
-    // forces index 3 and triggers assembly regardless of how it got
-    // there -- the Hamming(17,12,3)x3 + CRC-8 checks below are the real
-    // gate, not strict sequencing (a fragment lost off-air is just as
-    // likely to produce a checksum failure as an out-of-order one).
+    // A Short LC is exactly 4 fragments with LCSS 1,3,3,2 (ETSI TS 102
+    // 361-1 Table 9.20). Anything else -- a lost fragment, an extra
+    // continuation -- abandons the sequence instead of assembling with a
+    // stale or overwritten fragment.
     int index;
     if (header.lcss == 1) {
-        next_index_ = 0;
         index = 0;
-    } else if (header.lcss == 3) {
-        if (next_index_ < 0) return false;  // continuation with no first fragment seen yet
-        index = ++next_index_;
-    } else if (header.lcss == 2) {
-        if (next_index_ < 0) return false;
+    } else if (header.lcss == 3 && (next_index_ == 1 || next_index_ == 2)) {
+        index = next_index_;
+    } else if (header.lcss == 2 && next_index_ == 3) {
         index = 3;
     } else {
-        // LCSS=0 ("single fragment"): ETSI's own table lists this but
-        // notes no single-fragment Short LC PDU is actually defined --
-        // dsd-fme's own comment agrees ("no support"). Not handled.
+        // LCSS=0 ("single fragment") has no Short LC PDU defined; any
+        // other LCSS here is out of sequence.
         reset();
         return false;
     }
-
-    if (index > 3) {
-        reset();
-        return false;
-    }
+    next_index_ = index + 1;
 
     for (int i = 0; i < 17; i++) fragments_[index][i] = header.fragment[i];
 
@@ -210,17 +200,17 @@ bool ShortLcAssembler::add_fragment(const CachHeader& header, ShortLcResult& res
         result.activity.ts1_hash = static_cast<uint8_t>(bits_to_u32(pdu_ + 12, 8));
         result.activity.ts2_hash = static_cast<uint8_t>(bits_to_u32(pdu_ + 20, 8));
     } else if (result.slco == 0xF) {
-        // Motorola Capacity Plus/Cap Max site beacon. Field offsets
-        // confirmed against dsd-fme's dmr_flco.c dmr_slco():
-        // rest_channel=bits[16..19], reserved=bits[20..21],
-        // site_id=bits[22..24] (their own comment: "seems more
-        // consistent" -- i.e. empirically tuned, not from a public
-        // spec table; flagged here for the same reason).
+        // Motorola Capacity Plus/Cap Max site beacon. rest_channel=
+        // bits[16..19] as in dsd-fme's dmr_flco.c dmr_slco(). site_id is
+        // the 4 bits [21..24], not dsd-fme's 3 bits [22..24]: on the VHF
+        // multisite survey only the 4-bit reading matches every site's
+        // ID as listed in its neighbours' CSBKO 0x3B Adjacent Sites
+        // (sites 8, 11 and 13 otherwise alias to 0, 3 and 5).
         result.recognized = true;
         result.has_capacity_plus_site = true;
         result.capacity_plus_site.rest_channel = static_cast<uint8_t>(bits_to_u32(pdu_ + 16, 4));
-        result.capacity_plus_site.reserved = static_cast<uint8_t>(bits_to_u32(pdu_ + 20, 2));
-        result.capacity_plus_site.site_id = static_cast<uint8_t>(bits_to_u32(pdu_ + 22, 3));
+        result.capacity_plus_site.reserved = static_cast<uint8_t>(bits_to_u32(pdu_ + 20, 1));
+        result.capacity_plus_site.site_id = static_cast<uint8_t>(bits_to_u32(pdu_ + 21, 4));
     }
 
     return true;

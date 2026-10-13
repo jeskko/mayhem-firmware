@@ -50,22 +50,35 @@ FullLcResult fulllc_decode(const uint8_t pdu96[96], bool is_terminator) {
     const uint32_t mask = is_terminator ? RS_MASK_TERMINATOR_WITH_LC : RS_MASK_VOICE_LC_HEADER;
     if (!rs129_correct(codeword, mask)) return r;  // uncorrectable -- reject outright
 
-    // Re-derive bit-per-byte fields from the (possibly RS-corrected)
-    // codeword bytes rather than the original pdu96 array, so a
-    // corrected byte actually takes effect.
-    r.flco = static_cast<uint8_t>(codeword[0] & 0x3F);
-    r.fid = codeword[1];
-
-    if (r.flco != static_cast<uint8_t>(Flco::GROUP_VOICE) &&
-        r.flco != static_cast<uint8_t>(Flco::PRIVATE_VOICE)) {
-        return r;
-    }
-
-    r.service_options = codeword[2];
-    r.dest_address = (static_cast<uint32_t>(codeword[3]) << 16) | (static_cast<uint32_t>(codeword[4]) << 8) | codeword[5];
-    r.source_address = (static_cast<uint32_t>(codeword[6]) << 16) | (static_cast<uint32_t>(codeword[7]) << 8) | codeword[8];
-    r.recognized = true;
+    // Parse from the (possibly RS-corrected) codeword bytes rather than
+    // the original pdu96 array, so a corrected byte actually takes effect.
+    parse_voice_lc(codeword, r);
     return r;
+}
+
+bool parse_voice_lc(const uint8_t lc[9], FullLcResult& r) {
+    r = FullLcResult{};
+    r.flco = static_cast<uint8_t>(lc[0] & 0x3F);
+    r.fid = lc[1];
+    r.service_options = lc[2];
+    r.dest_address = (static_cast<uint32_t>(lc[3]) << 16) | (static_cast<uint32_t>(lc[4]) << 8) | lc[5];
+
+    if (r.flco == static_cast<uint8_t>(Flco::GROUP_VOICE) ||
+        r.flco == static_cast<uint8_t>(Flco::PRIVATE_VOICE)) {
+        r.source_address = (static_cast<uint32_t>(lc[6]) << 16) | (static_cast<uint32_t>(lc[7]) << 8) | lc[8];
+        r.is_group = r.flco == static_cast<uint8_t>(Flco::GROUP_VOICE);
+    } else if (r.fid == 0x10 &&
+               (r.flco == static_cast<uint8_t>(Flco::CAPACITY_PLUS_GROUP_VOICE) ||
+                r.flco == static_cast<uint8_t>(Flco::CAPACITY_PLUS_PRIVATE_VOICE))) {
+        r.source_address = (static_cast<uint32_t>(lc[7]) << 8) | lc[8];
+        r.is_group = r.flco == static_cast<uint8_t>(Flco::CAPACITY_PLUS_GROUP_VOICE);
+    } else {
+        r.service_options = 0;
+        r.dest_address = 0;
+        return false;
+    }
+    r.recognized = true;
+    return true;
 }
 
 ServiceOptions decode_service_options(uint8_t so, uint8_t fid) {

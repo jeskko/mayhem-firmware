@@ -59,10 +59,17 @@ namespace dmr {
 enum class Flco : uint8_t {
     GROUP_VOICE = 0,
     PRIVATE_VOICE = 3,
+    // Motorola Capacity Plus (FID 0x10) voice LCs, layout as in dsd-fme
+    // dmr_flco.c: dest 24 bits [24..47], site [48..51], rest LSN
+    // [52..55], 16-bit source [56..71]. Confirmed on air (VHF Cap+ wide-
+    // area call, TG 2, talkers 1093/1100).
+    CAPACITY_PLUS_GROUP_VOICE = 4,
+    CAPACITY_PLUS_PRIVATE_VOICE = 7,
 };
 
 struct FullLcResult {
     bool recognized{false};  // true iff RS(12,9) validated/corrected AND flco is one of the Flco values above
+    bool is_group{false};
     uint8_t flco{0};
     uint8_t fid{0};
     uint8_t service_options{0};
@@ -77,6 +84,12 @@ struct FullLcResult {
 // VOICE_LC_HEADER; using the wrong one will reliably fail the check
 // rather than silently validating, by design.
 FullLcResult fulllc_decode(const uint8_t pdu96[96], bool is_terminator);
+
+// Parses the 72-bit LC common to Full LC and Embedded LC (9 bytes, FLCO in
+// the low 6 bits of byte 0, FID in byte 1) as a voice LC. Fills `r` and
+// returns true for the group/private voice FLCOs above (Capacity Plus ones
+// only under FID 0x10); false otherwise, with only flco/fid filled.
+bool parse_voice_lc(const uint8_t lc[9], FullLcResult& r);
 
 // Service Options byte (ETSI TS 102 361-1 Table 7.2), bit-for-bit
 // confirmed against dsd-fme's src/dmr_flco.c (the `so & 0x80` etc.
